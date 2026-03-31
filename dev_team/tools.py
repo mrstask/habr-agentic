@@ -202,20 +202,28 @@ def search_code(pattern: str, path: str = "backend") -> str:
         return f"ERROR: {e}"
 
 
-def write_files(files: list[dict], summary: str) -> dict:
+def write_files(files: list[dict] | str, summary: str) -> dict:
     """Deferred — actual writing happens after PM review in orchestrator."""
+    if isinstance(files, str):
+        import json
+        try:
+            files = json.loads(files)
+        except Exception:
+            files = []
     return {"status": "pending_review", "files": files, "summary": summary}
+
 
 
 # ── Dispatcher ─────────────────────────────────────────────────────────────────
 
 def dispatch(name: str, args: dict) -> Any:
     if name == "read_file":
-        return read_file(args["path"])
+        return read_file(args.get("path", ""))
     if name == "list_files":
-        return list_files(args["pattern"])
+        return list_files(args.get("pattern", ""))
     if name == "search_code":
         return search_code(args.get("pattern", ""), args.get("path", "backend"))
     if name == "write_files":
         return write_files(args.get("files", []), args.get("summary", ""))
     return f"ERROR: Unknown tool '{name}'"
+

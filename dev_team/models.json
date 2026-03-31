@@ -5,7 +5,7 @@
   },
   "developer": {
     "backend": "openrouter",
-    "model": "xiaomi/mimo-v2-pro"
+    "model": "xiaomi/mimo-v2-flash"
   },
   "reviewer": {
     "backend": "ollama",

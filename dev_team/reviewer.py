@@ -3,8 +3,10 @@ import json
 import re
 
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.text import Text
 
 import config
 from ollama_client import OllamaClient
@@ -67,15 +69,26 @@ class ReviewerAgent:
         ))
 
         try:
-            resp = self.client.chat(
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user",   "content": prompt},
-                ],
-                temperature=0.1,
-                timeout=240,
-            )
-            content = resp.get("message", {}).get("content", "")
+            accumulated = ""
+            final_resp  = {}
+            with Live("", console=console, refresh_per_second=10, transient=True) as live:
+                for chunk, final in self.client.stream_chat(
+                    messages=[
+                        {"role": "system", "content": _SYSTEM_PROMPT},
+                        {"role": "user",   "content": prompt},
+                    ],
+                    temperature=0.1,
+                    timeout=240,
+                ):
+                    if final is not None:
+                        final_resp = final
+                        break
+                    accumulated += chunk
+                    # Show last line of reasoning to indicate progress
+                    last_line = accumulated.strip().splitlines()[-1] if accumulated.strip() else ""
+                    live.update(Text(f"  {last_line}", style="dimitalic"))
+
+            content = final_resp.get("message", {}).get("content", "")
             result  = _parse_json(content)
         except Exception as e:
             console.print(f"[red]  Reviewer error: {e}[/red]")

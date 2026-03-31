@@ -146,13 +146,13 @@ class DevAgent:
     def _stream_round(self, messages: list[dict]) -> tuple[dict, str]:
         """
         Run one chat round with streaming output.
-        Displays tokens live (refreshing last line) via Rich Live.
+        Displays tokens live (refreshing last few lines) via Rich Live.
         Returns (response_dict, full_content).
         """
         accumulated = ""
         final_resp: dict = {}
 
-        with Live("", console=console, refresh_per_second=12, transient=True) as live:
+        with Live("", console=console, refresh_per_second=10, transient=True) as live:
             for chunk, final in self.client.stream_chat(
                 messages=messages, tools=TOOL_SPECS, temperature=0.05,
                 timeout=config.OLLAMA_TIMEOUT,
@@ -161,13 +161,21 @@ class DevAgent:
                     final_resp = final
                     break
                 accumulated += chunk
-                last_line = accumulated.rstrip("\n").rsplit("\n", 1)[-1]
-                live.update(Text(f"  {last_line}", style="dim"))
+                # Show up to the last 2 lines of reasoning to give a sense of streaming
+                lines = accumulated.strip().splitlines()
+                preview = "\n".join(lines[-2:]) if lines else ""
+                live.update(Text(f"  {preview}", style="dimitalic"))
 
-        # Print the last line permanently after Live exits
-        last_line: str = accumulated.rstrip("\n").rsplit("\n", 1)[-1]
-        if last_line.strip():
-            console.print(f"  [dim]{last_line.strip()[:120]}[/dim]")
+        # Permanently print the beginning of the model's reasoning/thought
+        clean_accumulated = accumulated.strip()
+        if clean_accumulated:
+            lines = clean_accumulated.splitlines()
+            if lines:
+                top_line = lines[0]
+                if len(top_line) > 120:
+                    top_line = top_line[:117] + "..."
+                console.print(f"  {top_line}")
+
 
         return final_resp, accumulated
 

@@ -4,8 +4,10 @@ import re
 from pathlib import Path
 
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.text import Text
 
 import config
 from ollama_client import OllamaClient
@@ -78,7 +80,21 @@ class TestAgent:
             console.print(f"[dim]  round {round_num}/8 ...[/dim]", end="")
 
             try:
-                resp = self.client.chat(messages=messages, tools=TOOL_SPECS, temperature=0.05)
+                accumulated = ""
+                final_resp  = {}
+                with Live("", console=console, refresh_per_second=10, transient=True) as live:
+                    for chunk, final in self.client.stream_chat(
+                        messages=messages, tools=TOOL_SPECS, temperature=0.05
+                    ):
+                        if final is not None:
+                            final_resp = final
+                            break
+                        accumulated += chunk
+                        # Show last line of reasoning to indicate progress
+                        last_line = accumulated.strip().splitlines()[-1] if accumulated.strip() else ""
+                        live.update(Text(f"  {last_line}", style="dimitalic"))
+
+                resp = final_resp
             except Exception as e:
                 console.print(f"\n[red]  Test agent error: {e}[/red]")
                 return None

@@ -3,8 +3,10 @@ import subprocess
 from pathlib import Path
 
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.text import Text
 
 import config
 from ollama_client import OllamaClient
@@ -54,17 +56,35 @@ class CIAgent:
 
         # ── 2. Run tox ────────────────────────────────────────────────────────
         console.print("\n[dim]  Running tox ...[/dim]")
-        result = subprocess.run(
-            ["tox"],
-            cwd=str(config.ROOT),
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-        tox_output = result.stdout + result.stderr
+        tox_output = ""
+        try:
+            process = subprocess.Popen(
+                ["tox"],
+                cwd=str(config.ROOT),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,  # Merge stderr into stdout
+                text=True,
+                bufsize=1,
+            )
+            
+            with Live("", console=console, refresh_per_second=4, transient=True) as live:
+                while True:
+                    line = process.stdout.readline()
+                    if not line and process.poll() is not None:
+                        break
+                    if line:
+                        tox_output += line
+                        live.update(Text(f"  {line.strip()}", style="dimitalic"))
+            
+            process.wait(timeout=300)
+            returncode = process.returncode
+        except Exception as e:
+            console.print(f"[red]  tox execution failed: {e}[/red]")
+            return {"status": "failed", "output": str(e)}
+
         last_lines = "\n".join(tox_output.splitlines()[-40:])
 
-        if result.returncode != 0:
+        if returncode != 0:
             console.print(Panel(last_lines, title="[red]tox FAILED[/red]", border_style="red"))
             # Roll back written files so workspace stays clean
             for p in written:
