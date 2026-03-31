@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+sqlalchemy[asyncio]
+aiosqlite
+alembic
+pydantic-settings
+httpx
+langgraph>=0.4
+langgraph-checkpoint-sqlite>=2.0
+openai
+pillow
+beautifulsoup4
+lxml
+numpy
+jinja2
+python-multipart

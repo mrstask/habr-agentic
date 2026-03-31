@@ -1,0 +1,19 @@
+{
+  "name": "habr-agentic-frontend",
+  "version": "1.0.0",
+  "main": "index.html",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "serve": "vite preview"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^6.0.0"
+  },
+  "devDependencies": {
+    "vite": "^4.0.0",
+    "typescript": "^4.0.0"
+  }
+}

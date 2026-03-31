@@ -1,0 +1,22 @@
+# Python
+*.py[cod]
+*$py.class
+__pycache__/
+dist/
+build/
+*.egg-info/
+.env
+.venv/
+
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# SQLite
+db.sqlite3
+articles_db.sqlite3
+pipeline_checkpoints.db
+
+# Other
+.DS_Store
