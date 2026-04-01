@@ -1,6 +1,2 @@
-{
-  "python.defaultInterpreterPath": "/Users/stanislavlazarenko/.pyenv/versions/3.14.3/bin/python",
-  "python.analysis.extraPaths": [
-    "${workspaceFolder}/dev_team"
-  ]
-}
+{}
+
