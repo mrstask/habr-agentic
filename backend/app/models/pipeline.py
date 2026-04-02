@@ -1,16 +1,15 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Float
-from sqlalchemy.orm import relationship
-from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column, Integer, String, Text, DateTime, Float
 from sqlalchemy.sql import func
+
+from app.db.base import Base
 from app.models.enums import PipelineStep, RunStatus
 
-AppBase = declarative_base()
 
-class PipelineRun(AppBase):
+class PipelineRun(Base):
     __tablename__ = 'pipeline_runs'
 
     id = Column(Integer, primary_key=True)
-    article_id = Column(Integer, ForeignKey('articles.id'), index=True)
+    article_id = Column(Integer, index=True)
     step = Column(String, nullable=False)
     status = Column(String, default=RunStatus.running.value)
     started_at = Column(DateTime, server_default=func.now(), nullable=False)
@@ -18,7 +17,8 @@ class PipelineRun(AppBase):
     error = Column(Text, nullable=True)
     duration_seconds = Column(Float, nullable=True)
 
-class AgentConfig(AppBase):
+
+class AgentConfig(Base):
     __tablename__ = 'agent_configs'
 
     id = Column(Integer, primary_key=True)

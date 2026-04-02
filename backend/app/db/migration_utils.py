@@ -33,9 +33,9 @@ def get_alembic_config(ini_path: Optional[Path] = None) -> "alembic.config.Confi
     import alembic.config
 
     path = ini_path or ALEMBIC_INI_PATH
-    config = alembic.config.Config(str(path))
-    config.set_main_option("script_location", str(ALEMBIC_SCRIPT_PATH))
-    return config
+    cfg = alembic.config.Config(str(path))
+    cfg.set_main_option("script_location", str(ALEMBIC_SCRIPT_PATH))
+    return cfg
 
 
 async def run_migrations_on_startup(
@@ -55,23 +55,24 @@ async def run_migrations_on_startup(
     from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
 
-    config = get_alembic_config()
+    cfg = get_alembic_config()
+    script = ScriptDirectory.from_config(cfg)
 
-    # Run migrations for the App database
-    async with app_engine.begin() as conn:
-        await conn.run_sync(
-            lambda c: alembic.command.upgrade(
-                get_alembic_config(), "head", sql=False
-            )
-        )
+    async def _run_migrations(engine: AsyncEngine, branch_label: str) -> None:
+        async with engine.begin() as conn:
+            context = MigrationContext.configure(conn)
+            current_rev = context.get_current_revision()
+            head_rev = script.get_current_head(branch_label)
 
-    # Run migrations for the Articles database
-    async with articles_engine.begin() as conn:
-        await conn.run_sync(
-            lambda c: alembic.command.upgrade(
-                get_alembic_config(), "head", sql=False
-            )
-        )
+            if current_rev == head_rev:
+                return  # Already up to date
+
+            # Run upgrade programmatically
+            cfg.set_main_option("sqlalchemy.url", str(engine.url))
+            alembic.command.upgrade(cfg, f"{branch_label}@head")
+
+    await _run_migrations(app_engine, "app")
+    await _run_migrations(articles_engine, "articles")
 
 
 def get_current_revision(engine_url: str) -> Optional[str]:
@@ -84,13 +85,20 @@ def get_current_revision(engine_url: str) -> Optional[str]:
         The revision identifier string, or ``None`` if the database
         has not been stamped.
     """
-    import alembic.runtime.migration
-    from sqlalchemy import create_engine
+    import alembic.config
+    from alembic.runtime.migration import MigrationContext
+    from sqlalchemy import create_engine, text
+
+    cfg = get_alembic_config()
+    cfg.set_main_option("sqlalchemy.url", engine_url)
 
     engine = create_engine(engine_url)
-    with engine.connect() as conn:
-        context = alembic.runtime.migration.MigrationContext.configure(conn)
-        return context.get_current_revision()
+    try:
+        with engine.connect() as conn:
+            context = MigrationContext.configure(conn)
+            return context.get_current_revision()
+    finally:
+        engine.dispose()
 
 
 def check_pending_migrations(engine_url: str) -> bool:
@@ -103,16 +111,19 @@ def check_pending_migrations(engine_url: str) -> bool:
         ``True`` if there are migrations that have not yet been applied.
     """
     from alembic.script import ScriptDirectory
+    from alembic.runtime.migration import MigrationContext
     from sqlalchemy import create_engine
-    import alembic.runtime.migration
 
-    config = get_alembic_config()
-    script = ScriptDirectory.from_config(config)
-    head = script.get_current_head()
+    cfg = get_alembic_config()
+    cfg.set_main_option("sqlalchemy.url", engine_url)
+    script = ScriptDirectory.from_config(cfg)
 
     engine = create_engine(engine_url)
-    with engine.connect() as conn:
-        context = alembic.runtime.migration.MigrationContext.configure(conn)
-        current = context.get_current_revision()
-
-    return current != head
+    try:
+        with engine.connect() as conn:
+            context = MigrationContext.configure(conn)
+            current_rev = context.get_current_revision()
+            head_rev = script.get_current_head()
+            return current_rev != head_rev
+    finally:
+        engine.dispose()

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 
 # Import models and bases
-from app.db.base import AppBase, ArticleBase
+from app.db.base import Base
 from app.db.session import APP_ENGINE, ARTICLES_ENGINE
 import app.models  # noqa: F401
 
@@ -21,12 +21,8 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Define metadata for each database
-app_metadata = AppBase.metadata
-article_metadata = ArticleBase.metadata
-
-# Store the original run_migrations_online function
-original_run_migrations_online = None
+# Unified metadata for all models
+target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
@@ -41,7 +37,7 @@ def run_migrations_offline() -> None:
     # Configure for app database
     context.configure(
         url=app_db_url,
-        target_metadata=app_metadata,
+        target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         version_table='alembic_version_app',
@@ -53,7 +49,7 @@ def run_migrations_offline() -> None:
     # Configure for articles database
     context.configure(
         url=articles_db_url,
-        target_metadata=article_metadata,
+        target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         version_table='alembic_version_articles',
@@ -62,21 +58,10 @@ def run_migrations_offline() -> None:
     with context.begin_transaction():
         context.run_migrations()
 
-def do_run_migrations_app(connection: Connection) -> None:
+def do_run_migrations(connection: Connection) -> None:
     context.configure(
         connection=connection,
-        target_metadata=app_metadata,
-        version_table='alembic_version_app',
-    )
-    
-    with context.begin_transaction():
-        context.run_migrations()
-
-def do_run_migrations_articles(connection: Connection) -> None:
-    context.configure(
-        connection=connection,
-        target_metadata=article_metadata,
-        version_table='alembic_version_articles',
+        target_metadata=target_metadata,
     )
     
     with context.begin_transaction():
@@ -105,11 +90,11 @@ async def run_async_migrations() -> None:
     
     # Run migrations for app database
     async with app_connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations_app)
+        await connection.run_sync(do_run_migrations)
     
     # Run migrations for articles database
     async with articles_connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations_articles)
+        await connection.run_sync(do_run_migrations)
     
     await app_connectable.dispose()
     await articles_connectable.dispose()

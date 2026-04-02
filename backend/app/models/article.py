@@ -1,22 +1,20 @@
 from sqlalchemy import Column, Integer, String, Text, ForeignKey, Table, func, DateTime, Boolean
 from sqlalchemy.orm import relationship
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.sql import text
+
+from app.db.base import Base
 from app.models.enums import ArticleStatus
 
-ArticleBase = declarative_base()
-
-article_tags = Table('article_tags', ArticleBase.metadata,
+article_tags = Table('article_tags', Base.metadata,
     Column('article_id', Integer, ForeignKey('articles.id'), primary_key=True),
     Column('tag_id', Integer, ForeignKey('tags.id'), primary_key=True)
 )
 
-article_hubs = Table('article_hubs', ArticleBase.metadata,
+article_hubs = Table('article_hubs', Base.metadata,
     Column('article_id', Integer, ForeignKey('articles.id'), primary_key=True),
     Column('hub_id', Integer, ForeignKey('hubs.id'), primary_key=True)
 )
 
-class Article(ArticleBase):
+class Article(Base):
     __tablename__ = 'articles'
 
     id = Column(Integer, primary_key=True, index=True)
@@ -42,7 +40,7 @@ class Article(ArticleBase):
     hubs = relationship('Hub', secondary=article_hubs, back_populates='articles')
     images = relationship('Image', back_populates='article')
 
-class Tag(ArticleBase):
+class Tag(Base):
     __tablename__ = 'tags'
 
     id = Column(Integer, primary_key=True)
@@ -51,7 +49,7 @@ class Tag(ArticleBase):
 
     articles = relationship('Article', secondary=article_tags, back_populates='tags')
 
-class Hub(ArticleBase):
+class Hub(Base):
     __tablename__ = 'hubs'
 
     id = Column(Integer, primary_key=True)
@@ -60,7 +58,7 @@ class Hub(ArticleBase):
 
     articles = relationship('Article', secondary=article_hubs, back_populates='hubs')
 
-class Image(ArticleBase):
+class Image(Base):
     __tablename__ = 'images'
 
     id = Column(Integer, primary_key=True)
