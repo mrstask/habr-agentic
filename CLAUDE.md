@@ -97,3 +97,60 @@ ollama serve                # API on :11434
 - `LANGGRAPH_ARCHITECTURE.md` — Graph architecture (nodes, edges, state, routing)
 - `AGENTS.plan.md` — Detailed agent specifications and filtering rules
 - `LOCAL_LLM.md` — Local LLM setup for content filtering and embeddings
+
+## Key File Paths (agent reference)
+
+> Keep this section up to date as new files are created.
+> All paths are relative to the project root (`habr-agentic/`).
+> NEVER use the project folder name as a prefix in tool calls — paths start with `backend/`, `frontend/`, etc.
+
+### Database / Migrations
+- `backend/alembic.ini` — Alembic config
+- `backend/alembic/script.py.mako` — Alembic migration template
+- `backend/alembic/env.py` — async migration runner (dual-DB: AppBase + ArticleBase)
+- `backend/alembic/versions/20260402_0001_initial_app_schema.py` — app DB migration (admin_users, sidebar_banners, categories, seo_settings, pipeline_runs, agent_configs)
+- `backend/alembic/versions/20260402_0002_initial_articles_schema.py` — articles DB migration (articles, tags, hubs, images, article_tags, article_hubs, article_embeddings)
+- `backend/alembic/versions/20260402_0003_add_article_indexes.py` — performance indexes on articles + pipeline_runs
+- `backend/app/db/base.py` — AppBase + ArticleBase declarative bases (centralized)
+- `backend/app/db/session.py` — async engine and session factories
+- `backend/app/db/migration_utils.py` — programmatic migration helpers (get_alembic_config, run_migrations_on_startup, get_current_revision, check_pending_migrations)
+
+### Models
+- `backend/app/models/__init__.py` — model registry (imports all models for Alembic discovery)
+- `backend/app/models/admin.py` — AdminUser, SidebarBanner, Category, SeoSettings (AppBase)
+- `backend/app/models/article.py` — Article, Tag, Hub, Image, article_tags, article_hubs (ArticleBase)
+- `backend/app/models/embedding.py` — ArticleEmbedding (ArticleBase)
+- `backend/app/models/pipeline.py` — PipelineRun, AgentConfig (AppBase)
+- `backend/app/models/enums.py` — ArticleStatus, PipelineStep, RunStatus
+
+### Core Config
+- `backend/app/core/config.py` — Settings (pydantic-settings), DATABASE_URL, DATABASE_ARTICLES_URL
+
+
+<!-- dev_team: task #72 completed -->
+## [Consolidate model bases] — done
+Consolidated SQLAlchemy model bases from two separate declarative bases (AppBase, ArticleBase) into a single unified Base class.
+
+Changes made:
+1. **backend/app/db/base.py** - Created single `Base = declarative_base()` with `AppBase` and `ArticleBase` as backward-compatible aliases
+2. **backend/app/models/admin.py** - Updated imports to use `Base` instead of `AppBase`
+3. **backend/app/models/article.py** - Updated imports to use `Base` instead of `ArticleBase`
+4. **backend/app/models/embedding.py** - Updated imports to use `Base` instead of `ArticleBase`
+5. **backend/app/models/pipeline.py** - Updated imports to use `Base` instead of `AppBase`
+6. **backend/alembic/env.py** - Simplified to use single `Base.metadata` instead of separate metadata objects
+7. **backend/tests/test_models_*.py** - Updated all 4 test files to import `Base` instead of `AppBase`/`ArticleBase`
+
+The dual-database separation is now handled at the engine/session level rather than through separate declarative bases, while maintaining full backward compatibility via aliases.
+
+Files changed:
+  - backend/app/db/base.py
+  - backend/app/models/admin.py
+  - backend/app/models/article.py
+  - backend/app/models/embedding.py
+  - backend/app/models/pipeline.py
+  - backend/alembic/env.py
+  - backend/app/db/migration_utils.py
+  - backend/tests/test_models_admin.py
+  - backend/tests/test_models_article.py
+  - backend/tests/test_models_embedding.py
+  - backend/tests/test_models_pipeline.py

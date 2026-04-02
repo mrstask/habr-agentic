@@ -24,9 +24,10 @@ def upgrade() -> None:
     The articles table uses an IntEnum for status:
         DISCOVERED=0, EXTRACTED=1, TRANSLATED=2, PUBLISHED=3, USELESS=4, DRAFT=5
     """
+    # Create articles table
     op.create_table(
         "articles",
-        sa.Column("id", sa.Integer(), primary_key=True, nullable=False),
+        sa.Column("id", sa.Integer(), primary_key=True, index=True),
         sa.Column("habr_id", sa.String(), unique=True, nullable=False),
         sa.Column("source_url", sa.String(), nullable=False),
         sa.Column("source_title", sa.String(), nullable=False),
@@ -46,44 +47,50 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(), server_default=sa.func.now(), onupdate=sa.func.now(), nullable=False),
     )
 
+    # Create tags table
     op.create_table(
         "tags",
-        sa.Column("id", sa.Integer(), primary_key=True, nullable=False),
+        sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("name", sa.String(), unique=True, nullable=False),
         sa.Column("target_name", sa.String(), nullable=True),
     )
 
+    # Create hubs table
     op.create_table(
         "hubs",
-        sa.Column("id", sa.Integer(), primary_key=True, nullable=False),
+        sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("name", sa.String(), unique=True, nullable=False),
         sa.Column("target_name", sa.String(), nullable=True),
     )
 
+    # Create images table
     op.create_table(
         "images",
-        sa.Column("id", sa.Integer(), primary_key=True, nullable=False),
+        sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("article_id", sa.Integer(), sa.ForeignKey("articles.id"), nullable=False),
         sa.Column("original_url", sa.String(), nullable=False),
         sa.Column("local_path", sa.String(), nullable=True),
         sa.Column("is_lead", sa.Boolean(), default=False),
     )
 
+    # Create article_tags association table
     op.create_table(
         "article_tags",
-        sa.Column("article_id", sa.Integer(), sa.ForeignKey("articles.id"), primary_key=True, nullable=False),
-        sa.Column("tag_id", sa.Integer(), sa.ForeignKey("tags.id"), primary_key=True, nullable=False),
+        sa.Column("article_id", sa.Integer(), sa.ForeignKey("articles.id"), primary_key=True),
+        sa.Column("tag_id", sa.Integer(), sa.ForeignKey("tags.id"), primary_key=True),
     )
 
+    # Create article_hubs association table
     op.create_table(
         "article_hubs",
-        sa.Column("article_id", sa.Integer(), sa.ForeignKey("articles.id"), primary_key=True, nullable=False),
-        sa.Column("hub_id", sa.Integer(), sa.ForeignKey("hubs.id"), primary_key=True, nullable=False),
+        sa.Column("article_id", sa.Integer(), sa.ForeignKey("articles.id"), primary_key=True),
+        sa.Column("hub_id", sa.Integer(), sa.ForeignKey("hubs.id"), primary_key=True),
     )
 
+    # Create article_embeddings table
     op.create_table(
         "article_embeddings",
-        sa.Column("id", sa.Integer(), primary_key=True, nullable=False),
+        sa.Column("id", sa.Integer(), primary_key=True),
         sa.Column("article_id", sa.Integer(), sa.ForeignKey("articles.id"), unique=True, index=True),
         sa.Column("embedding", sa.Text(), nullable=False),
         sa.Column("embedding_model", sa.String(100), nullable=False),
