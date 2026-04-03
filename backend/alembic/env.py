@@ -58,10 +58,11 @@ def run_migrations_offline() -> None:
     with context.begin_transaction():
         context.run_migrations()
 
-def do_run_migrations(connection: Connection) -> None:
+def do_run_migrations(connection: Connection, version_table: str = "alembic_version") -> None:
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
+        version_table=version_table,
     )
     
     with context.begin_transaction():
@@ -90,18 +91,28 @@ async def run_async_migrations() -> None:
     
     # Run migrations for app database
     async with app_connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+        await connection.run_sync(lambda c: do_run_migrations(c, "alembic_version_app"))
     
     # Run migrations for articles database
     async with articles_connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
+        await connection.run_sync(lambda c: do_run_migrations(c, "alembic_version_articles"))
     
     await app_connectable.dispose()
     await articles_connectable.dispose()
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
-    asyncio.run(run_async_migrations())
+    # Check if a connection is already provided in the context
+    # This happens when command.upgrade is called with a connection
+    connectable = context.config.attributes.get('connection')
+    
+    if connectable is None:
+        # No connection provided, run migrations for both databases
+        asyncio.run(run_async_migrations())
+    else:
+        # Connection provided (sync Connection from run_sync), use it directly
+        version_table = context.config.get_main_option('version_table', 'alembic_version')
+        do_run_migrations(connectable, version_table)
 
 if context.is_offline_mode():
     run_migrations_offline()

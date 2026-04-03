@@ -126,6 +126,8 @@ ollama serve                # API on :11434
 ### Core Config
 - `backend/app/core/config.py` — Settings (pydantic-settings), DATABASE_URL, DATABASE_ARTICLES_URL
 
+### Tests
+- `backend/tests/test_migrations_e2e.py` — End-to-end migration tests (validates all tables, columns, indexes, constraints, and downgrades)
 
 <!-- dev_team: task #72 completed -->
 ## [Consolidate model bases] — done
