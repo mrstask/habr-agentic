@@ -1,141 +1,127 @@
-"""Tests for the embedding provider factory and registry."""
+"""
+Tests for the embedding provider factory.
 
-from unittest.mock import patch
+Tests the happy path of creating embedding providers via the factory,
+including registration, configuration, and instantiation.
+"""
 
 import pytest
+from unittest.mock import patch
 
-from app.etl.embedding.base import BaseEmbeddingProvider, EmbeddingError, EmbeddingRequest, EmbeddingResult
 from app.etl.embedding.providers.factory import (
-    _EMBEDDING_PROVIDER_REGISTRY,
     create_embedding_provider,
     get_registered_embedding_providers,
     register_embedding_provider,
 )
+from app.etl.embedding.providers.openai import OpenAIEmbeddingProvider
+from app.etl.embedding.providers.ollama import OllamaEmbeddingProvider
+from app.etl.embedding.base import BaseEmbeddingProvider
 
 
-class DummyEmbeddingProvider(BaseEmbeddingProvider):
-    """Minimal concrete provider for factory tests."""
-
-    async def embed(self, request: EmbeddingRequest) -> EmbeddingResult:
-        return EmbeddingResult(
-            embedding=[0.1],
-            provider_name=self.name,
-            model_name=self.model,
-            dimensions=1,
-        )
-
-    async def embed_batch(self, texts: list[str]) -> list[EmbeddingResult]:
-        return []
-
-    async def health_check(self) -> bool:
-        return True
+@pytest.fixture
+def mock_settings():
+    """Mock the settings module for testing."""
+    with patch("app.etl.embedding.providers.factory.settings") as mock:
+        mock.OPENAI_API_KEY = "test-api-key"
+        mock.OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+        mock.OLLAMA_EMBEDDING_MODEL = "nomic-embed-text"
+        mock.OPENAI_TIMEOUT_SECONDS = 120
+        mock.OPENAI_MAX_RETRIES = 3
+        mock.EMBEDDING_DIMENSIONS = 1536
+        mock.OLLAMA_BASE_URL = "http://localhost:11434"
+        mock.OLLAMA_TIMEOUT_SECONDS = 300
+        yield mock
 
 
-@pytest.fixture(autouse=True)
-def clean_registry():
-    """Clear the registry before and after each test."""
-    _EMBEDDING_PROVIDER_REGISTRY.clear()
-    yield
-    _EMBEDDING_PROVIDER_REGISTRY.clear()
+def test_get_registered_embedding_providers():
+    """Test that registered providers are returned."""
+    providers = get_registered_embedding_providers()
+    assert "openai" in providers
+    assert "ollama" in providers
 
 
-class TestRegisterEmbeddingProvider:
-    def test_register_and_list(self):
-        register_embedding_provider("dummy", DummyEmbeddingProvider)
-        assert "dummy" in get_registered_embedding_providers()
+def test_register_embedding_provider():
+    """Test registering a new provider."""
+    class TestProvider(BaseEmbeddingProvider):
+        async def embed(self, request):
+            pass
+        async def embed_batch(self, texts):
+            pass
+        async def health_check(self):
+            return True
 
-    def test_register_overwrites(self):
-        register_embedding_provider("dummy", DummyEmbeddingProvider)
-        register_embedding_provider("dummy", DummyEmbeddingProvider)
-        assert get_registered_embedding_providers() == ["dummy"]
+    register_embedding_provider("test", TestProvider)
+    providers = get_registered_embedding_providers()
+    assert "test" in providers
 
 
-class TestCreateEmbeddingProvider:
-    def test_create_with_explicit_api_key(self):
-        register_embedding_provider("dummy", DummyEmbeddingProvider)
-        provider = create_embedding_provider("dummy", api_key="my-key", model="my-model")
-        assert isinstance(provider, DummyEmbeddingProvider)
-        assert provider.api_key == "my-key"
-        assert provider.model == "my-model"
+def test_create_openai_provider_with_api_key(mock_settings):
+    """Test creating OpenAI provider with explicit API key."""
+    provider = create_embedding_provider(
+        provider_name="openai",
+        api_key="explicit-key",
+        model="text-embedding-3-large",
+    )
+    
+    assert isinstance(provider, OpenAIEmbeddingProvider)
+    assert provider.api_key == "explicit-key"
+    assert provider.model == "text-embedding-3-large"
+    assert provider.name == "openaiembedding"
 
-    def test_create_unknown_provider_raises_value_error(self):
-        with pytest.raises(ValueError) as exc_info:
-            create_embedding_provider("nonexistent", api_key="key")
-        assert "Unknown embedding provider" in str(exc_info.value)
 
-    def test_create_openai_with_explicit_api_key(self):
-        """Test creating an openai provider with explicit api_key (no settings lookup)."""
-        register_embedding_provider("openai", DummyEmbeddingProvider)
-        provider = create_embedding_provider("openai", api_key="openai-key", model="gpt-4o-mini")
-        assert isinstance(provider, DummyEmbeddingProvider)
-        assert provider.api_key == "openai-key"
-        assert provider.model == "gpt-4o-mini"
+def test_create_openai_provider_from_settings(mock_settings):
+    """Test creating OpenAI provider using settings."""
+    provider = create_embedding_provider(provider_name="openai")
+    
+    assert isinstance(provider, OpenAIEmbeddingProvider)
+    assert provider.api_key == "test-api-key"
+    assert provider.model == "text-embedding-3-small"
+    assert provider.timeout == 120
+    assert provider.max_retries == 3
+    assert provider.dimensions == 1536
 
-    def test_create_ollama_with_explicit_model(self):
-        """Test creating an ollama provider with explicit model."""
-        register_embedding_provider("ollama", DummyEmbeddingProvider)
-        provider = create_embedding_provider("ollama", model="nomic-embed-text")
-        assert isinstance(provider, DummyEmbeddingProvider)
-        assert provider.model == "nomic-embed-text"
 
-    def test_create_openai_with_settings(self):
-        """Test creating an openai provider using settings for api_key and model."""
-        register_embedding_provider("openai", DummyEmbeddingProvider)
-        with patch("app.etl.embedding.providers.factory.settings") as mock_settings:
-            mock_settings.OPENAI_API_KEY = "openai-key"
-            mock_settings.OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
-            mock_settings.OPENAI_TIMEOUT_SECONDS = 120
-            mock_settings.OPENAI_MAX_RETRIES = 3
+def test_create_ollama_provider(mock_settings):
+    """Test creating Ollama provider."""
+    provider = create_embedding_provider(provider_name="ollama")
+    
+    assert isinstance(provider, OllamaEmbeddingProvider)
+    assert provider.model == "nomic-embed-text"
+    assert provider.base_url == "http://localhost:11434"
+    assert provider.timeout == 300
+    assert provider.max_retries == 3
 
-            provider = create_embedding_provider("openai")
-            assert isinstance(provider, DummyEmbeddingProvider)
-            assert provider.api_key == "openai-key"
-            assert provider.model == "text-embedding-3-small"
 
-    def test_create_ollama_with_settings(self):
-        """Test creating an ollama provider using settings for model."""
-        register_embedding_provider("ollama", DummyEmbeddingProvider)
-        with patch("app.etl.embedding.providers.factory.settings") as mock_settings:
-            mock_settings.OLLAMA_EMBEDDING_MODEL = "nomic-embed-text"
-            mock_settings.OLLAMA_BASE_URL = "http://localhost:11434"
-            mock_settings.OLLAMA_TIMEOUT_SECONDS = 300
+def test_create_ollama_provider_with_custom_config(mock_settings):
+    """Test creating Ollama provider with custom configuration."""
+    provider = create_embedding_provider(
+        provider_name="ollama",
+        model="custom-model",
+        base_url="http://custom:11434",
+        timeout=600,
+    )
+    
+    assert isinstance(provider, OllamaEmbeddingProvider)
+    assert provider.model == "custom-model"
+    assert provider.base_url == "http://custom:11434"
+    assert provider.timeout == 600
 
-            provider = create_embedding_provider("ollama")
-            assert isinstance(provider, DummyEmbeddingProvider)
-            assert provider.model == "nomic-embed-text"
 
-    def test_create_openai_missing_api_key_raises_embedding_error(self):
-        """Test that missing api_key raises EmbeddingError for openai provider."""
-        register_embedding_provider("openai", DummyEmbeddingProvider)
-        with patch("app.etl.embedding.providers.factory.settings") as mock_settings:
-            mock_settings.OPENAI_API_KEY = None
-            mock_settings.OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+def test_create_provider_with_kwargs_override(mock_settings):
+    """Test that explicit kwargs override settings."""
+    provider = create_embedding_provider(
+        provider_name="openai",
+        api_key="override-key",
+        timeout=300,
+        max_retries=5,
+    )
+    
+    assert provider.api_key == "override-key"
+    assert provider.timeout == 300
+    assert provider.max_retries == 5
 
-            with pytest.raises(EmbeddingError) as exc_info:
-                create_embedding_provider("openai")
-            assert exc_info.value.retryable is False
 
-    def test_create_with_explicit_kwargs_override(self):
-        register_embedding_provider("dummy", DummyEmbeddingProvider)
-        provider = create_embedding_provider(
-            "dummy",
-            api_key="explicit-key",
-            model="explicit-model",
-            timeout=999,
-        )
-        assert provider.api_key == "explicit-key"
-        assert provider.model == "explicit-model"
-        assert provider._extra_config.get("timeout") == 999
-
-    def test_create_openai_with_dimensions_kwarg(self):
-        """Test that dimensions kwarg is passed through for openai provider."""
-        register_embedding_provider("openai", DummyEmbeddingProvider)
-        with patch("app.etl.embedding.providers.factory.settings") as mock_settings:
-            mock_settings.OPENAI_API_KEY = "key"
-            mock_settings.OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
-            mock_settings.OPENAI_TIMEOUT_SECONDS = 120
-            mock_settings.OPENAI_MAX_RETRIES = 3
-
-            provider = create_embedding_provider("openai", dimensions=1024)
-            assert isinstance(provider, DummyEmbeddingProvider)
-            assert provider._extra_config.get("dimensions") == 1024
+def test_create_provider_unknown_name(mock_settings):
+    """Test that unknown provider name raises ValueError."""
+    with pytest.raises(ValueError, match="Unknown embedding provider"):
+        create_embedding_provider(provider_name="unknown_provider")

@@ -149,14 +149,13 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
             EmbeddingError: If the batch embedding fails after retries.
         """
         # Ollama doesn't have a native batch API, so we call embed() for each text
-        results: list[EmbeddingResult] = []
+        results = []
         for text in texts:
-            request = EmbeddingRequest(text=text, model=self.model)
             try:
-                result = await self.embed(request)
+                result = await self.embed(EmbeddingRequest(text=text, model=self.model))
                 results.append(result)
             except EmbeddingError as e:
-                # For partial failures, return result with error
+                # Create a partial failure result
                 results.append(
                     EmbeddingResult(
                         embedding=[],
@@ -179,7 +178,6 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
         """
         try:
             client = self._get_client()
-            # Try to get version info as health check
             response = await client.get("/api/version")
             response.raise_for_status()
             return True
@@ -201,9 +199,7 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
             "timeout",
             "connection",
             "network",
-            "connection refused",
-            "connection error",
-            "read error",
-            "write error",
+            "unavailable",
+            "server error",
         ]
         return any(pattern in error_str for pattern in retryable_patterns)

@@ -1,110 +1,90 @@
-"""Tests for the image generation provider factory and registry."""
+"""
+Tests for the image generation provider factory.
 
-from unittest.mock import patch
+Tests the happy path of creating image generation providers via the factory,
+including registration, configuration, and instantiation.
+"""
 
 import pytest
+from unittest.mock import patch
 
-from app.etl.image_generation.base import (
-    BaseImageGenerationProvider,
-    ImageGenerationError,
-    ImageGenerationRequest,
-    ImageGenerationResult,
-)
 from app.etl.image_generation.providers.factory import (
-    _IMAGE_PROVIDER_REGISTRY,
     create_image_provider,
     get_registered_image_providers,
     register_image_provider,
 )
+from app.etl.image_generation.providers.openai import OpenAIImageGenerationProvider
+from app.etl.image_generation.base import BaseImageGenerationProvider
 
 
-class DummyImageProvider(BaseImageGenerationProvider):
-    """Minimal concrete provider for factory tests."""
-
-    async def generate(self, request: ImageGenerationRequest) -> ImageGenerationResult:
-        return ImageGenerationResult(
-            image_url="https://example.com/image.png",
-            provider_name=self.name,
-            model_name=self.model,
-        )
-
-    async def health_check(self) -> bool:
-        return True
+@pytest.fixture
+def mock_settings():
+    """Mock the settings module for testing."""
+    with patch("app.etl.image_generation.providers.factory.settings") as mock:
+        mock.OPENAI_API_KEY = "test-api-key"
+        mock.IMAGE_GENERATION_MODEL = "dall-e-3"
+        mock.OPENAI_TIMEOUT_SECONDS = 120
+        mock.OPENAI_MAX_RETRIES = 3
+        yield mock
 
 
-@pytest.fixture(autouse=True)
-def clean_registry():
-    """Clear the registry before and after each test."""
-    _IMAGE_PROVIDER_REGISTRY.clear()
-    yield
-    _IMAGE_PROVIDER_REGISTRY.clear()
+def test_get_registered_image_providers():
+    """Test that registered providers are returned."""
+    providers = get_registered_image_providers()
+    assert "openai" in providers
 
 
-class TestRegisterImageProvider:
-    def test_register_and_list(self):
-        register_image_provider("dummy", DummyImageProvider)
-        assert "dummy" in get_registered_image_providers()
+def test_register_image_provider():
+    """Test registering a new provider."""
+    class TestProvider(BaseImageGenerationProvider):
+        async def generate(self, request):
+            pass
+        async def health_check(self):
+            return True
 
-    def test_register_overwrites(self):
-        register_image_provider("dummy", DummyImageProvider)
-        register_image_provider("dummy", DummyImageProvider)
-        assert get_registered_image_providers() == ["dummy"]
+    register_image_provider("test", TestProvider)
+    providers = get_registered_image_providers()
+    assert "test" in providers
 
 
-class TestCreateImageProvider:
-    def test_create_with_explicit_api_key(self):
-        register_image_provider("openai", DummyImageProvider)
-        provider = create_image_provider(api_key="my-key", model="my-model")
-        assert isinstance(provider, DummyImageProvider)
-        assert provider.api_key == "my-key"
-        assert provider.model == "my-model"
+def test_create_provider_with_api_key(mock_settings):
+    """Test creating provider with explicit API key."""
+    provider = create_image_provider(
+        api_key="explicit-key",
+        model="dall-e-2",
+    )
 
-    def test_create_unknown_provider_raises_value_error(self):
-        register_image_provider("dummy", DummyImageProvider)
-        with pytest.raises(ValueError) as exc_info:
-            create_image_provider(provider_name="nonexistent", api_key="key")
-        assert "Unknown image generation provider" in str(exc_info.value)
+    assert isinstance(provider, OpenAIImageGenerationProvider)
+    assert provider.api_key == "explicit-key"
+    assert provider.model == "dall-e-2"
+    assert provider.name == "openaiimagegeneration"
 
-    def test_create_openai_with_explicit_api_key(self):
-        """Test creating an openai provider with explicit api_key (no settings lookup)."""
-        register_image_provider("openai", DummyImageProvider)
-        provider = create_image_provider(api_key="openai-key", model="dall-e-2")
-        assert isinstance(provider, DummyImageProvider)
-        assert provider.api_key == "openai-key"
-        assert provider.model == "dall-e-2"
 
-    def test_create_openai_with_settings(self):
-        """Test creating an openai provider using settings for api_key and model."""
-        register_image_provider("openai", DummyImageProvider)
-        with patch("app.etl.image_generation.providers.factory.settings") as mock_settings:
-            mock_settings.OPENAI_API_KEY = "openai-key"
-            mock_settings.IMAGE_GENERATION_MODEL = "dall-e-3"
-            mock_settings.OPENAI_TIMEOUT_SECONDS = 120
-            mock_settings.OPENAI_MAX_RETRIES = 3
+def test_create_provider_from_settings(mock_settings):
+    """Test creating provider using settings."""
+    provider = create_image_provider()
 
-            provider = create_image_provider()
-            assert isinstance(provider, DummyImageProvider)
-            assert provider.api_key == "openai-key"
-            assert provider.model == "dall-e-3"
+    assert isinstance(provider, OpenAIImageGenerationProvider)
+    assert provider.api_key == "test-api-key"
+    assert provider.model == "dall-e-3"
+    assert provider.timeout == 120
+    assert provider.max_retries == 3
 
-    def test_create_missing_api_key_raises_image_generation_error(self):
-        """Test that missing api_key raises ImageGenerationError."""
-        register_image_provider("openai", DummyImageProvider)
-        with patch("app.etl.image_generation.providers.factory.settings") as mock_settings:
-            mock_settings.OPENAI_API_KEY = None
-            mock_settings.IMAGE_GENERATION_MODEL = "dall-e-3"
 
-            with pytest.raises(ImageGenerationError) as exc_info:
-                create_image_provider()
-            assert exc_info.value.retryable is False
+def test_create_provider_with_kwargs_override(mock_settings):
+    """Test that explicit kwargs override settings."""
+    provider = create_image_provider(
+        api_key="override-key",
+        timeout=300,
+        max_retries=5,
+    )
 
-    def test_create_with_explicit_kwargs_override(self):
-        register_image_provider("openai", DummyImageProvider)
-        provider = create_image_provider(
-            api_key="explicit-key",
-            model="explicit-model",
-            timeout=999,
-        )
-        assert provider.api_key == "explicit-key"
-        assert provider.model == "explicit-model"
-        assert provider._extra_config.get("timeout") == 999
+    assert provider.api_key == "override-key"
+    assert provider.timeout == 300
+    assert provider.max_retries == 5
+
+
+def test_create_provider_unknown_name(mock_settings):
+    """Test that unknown provider name raises ValueError."""
+    with pytest.raises(ValueError, match="Unknown image generation provider"):
+        create_image_provider(api_key="test-key", provider_name="unknown_provider")

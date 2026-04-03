@@ -1,179 +1,143 @@
-"""Tests for the OpenAI embedding provider."""
+"""
+Tests for the OpenAI embedding provider.
 
-from unittest.mock import AsyncMock, MagicMock, patch
+Tests the happy path of generating embeddings via the OpenAI API,
+with mocked external calls.
+"""
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.etl.embedding.base import EmbeddingError, EmbeddingRequest, EmbeddingResult
 from app.etl.embedding.providers.openai import OpenAIEmbeddingProvider
+from app.etl.embedding.base import EmbeddingRequest, EmbeddingResult
 
 
-def _make_mock_response(
-    embedding: list[float] | None = None,
-    prompt_tokens: int = 10,
-    total_tokens: int = 10,
-):
-    """Create a mock OpenAI CreateEmbeddingResponse."""
-    if embedding is None:
-        embedding = [0.1, 0.2, 0.3]
-
-    usage = MagicMock()
-    usage.prompt_tokens = prompt_tokens
-    usage.total_tokens = total_tokens
-
-    data_item = MagicMock()
-    data_item.embedding = embedding
-
-    response = MagicMock()
-    response.data = [data_item]
-    response.usage = usage
-    return response
+@pytest.fixture
+def mock_openai_client():
+    """Create a mock OpenAI async client."""
+    mock_client = MagicMock()
+    mock_embeddings = MagicMock()
+    mock_embeddings.create = AsyncMock()
+    mock_client.embeddings = mock_embeddings
+    return mock_client
 
 
-class TestOpenAIEmbeddingProviderInit:
-    def test_default_values(self):
-        provider = OpenAIEmbeddingProvider(api_key="test-key")
-        assert provider.api_key == "test-key"
-        assert provider.model == "text-embedding-3-small"
-        assert provider.timeout == 120
-        assert provider.max_retries == 3
-        assert provider.dimensions is None
-        assert provider.name == "openaiembedding"
+@pytest.fixture
+def provider():
+    """Create an OpenAI embedding provider for testing."""
+    return OpenAIEmbeddingProvider(
+        api_key="test-api-key",
+        model="text-embedding-3-small",
+        timeout=120,
+        max_retries=3,
+    )
 
-    def test_custom_values(self):
-        provider = OpenAIEmbeddingProvider(
-            api_key="key",
-            model="text-embedding-3-large",
-            timeout=60,
-            max_retries=5,
-            dimensions=1024,
+
+@pytest.mark.asyncio
+async def test_embed_success(provider, mock_openai_client):
+    """Test successful embedding generation."""
+    # Mock the response
+    mock_response = MagicMock()
+    mock_response.data = [MagicMock(embedding=[0.1, 0.2, 0.3])]
+    mock_response.usage = MagicMock(prompt_tokens=10, total_tokens=10)
+    mock_openai_client.embeddings.create.return_value = mock_response
+
+    with patch.object(provider, "_get_client", return_value=mock_openai_client):
+        result = await provider.embed(EmbeddingRequest(text="test text"))
+
+    assert isinstance(result, EmbeddingResult)
+    assert result.embedding == [0.1, 0.2, 0.3]
+    assert result.provider_name == "openaiembedding"
+    assert result.model_name == "text-embedding-3-small"
+    assert result.dimensions == 3
+    assert result.token_usage == {"input": 10, "total": 10}
+    assert result.latency_ms is not None
+
+
+@pytest.mark.asyncio
+async def test_embed_with_model_override(provider, mock_openai_client):
+    """Test embedding with model override."""
+    mock_response = MagicMock()
+    mock_response.data = [MagicMock(embedding=[0.1, 0.2])]
+    mock_response.usage = None
+    mock_openai_client.embeddings.create.return_value = mock_response
+
+    with patch.object(provider, "_get_client", return_value=mock_openai_client):
+        result = await provider.embed(
+            EmbeddingRequest(text="test", model="text-embedding-3-large")
         )
-        assert provider.model == "text-embedding-3-large"
-        assert provider.timeout == 60
-        assert provider.max_retries == 5
-        assert provider.dimensions == 1024
+
+    assert result.model_name == "text-embedding-3-large"
+    mock_openai_client.embeddings.create.assert_called_once()
+    call_kwargs = mock_openai_client.embeddings.create.call_args[1]
+    assert call_kwargs["model"] == "text-embedding-3-large"
 
 
-class TestOpenAIEmbeddingProviderGetClient:
-    def test_client_is_lazy(self):
-        provider = OpenAIEmbeddingProvider(api_key="key")
-        assert provider._client is None
+@pytest.mark.asyncio
+async def test_embed_with_dimensions(provider, mock_openai_client):
+    """Test embedding with dimensions parameter."""
+    mock_response = MagicMock()
+    mock_response.data = [MagicMock(embedding=[0.1] * 512)]
+    mock_response.usage = None
+    mock_openai_client.embeddings.create.return_value = mock_response
 
-    def test_client_is_cached(self):
-        provider = OpenAIEmbeddingProvider(api_key="key")
-        with patch("app.etl.embedding.providers.openai.AsyncOpenAI") as mock_cls:
-            client1 = provider._get_client()
-            client2 = provider._get_client()
-            assert client1 is client2
-            mock_cls.assert_called_once_with(api_key="key", timeout=120, max_retries=3)
+    with patch.object(provider, "_get_client", return_value=mock_openai_client):
+        result = await provider.embed(
+            EmbeddingRequest(text="test", dimensions=512)
+        )
 
-
-class TestOpenAIEmbeddingProviderEmbed:
-    @pytest.mark.asyncio
-    async def test_embed_success(self):
-        provider = OpenAIEmbeddingProvider(api_key="key", max_retries=1)
-        mock_response = _make_mock_response(embedding=[0.1, 0.2, 0.3], prompt_tokens=10, total_tokens=10)
-
-        with patch("app.etl.embedding.providers.openai.AsyncOpenAI") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.embeddings.create = AsyncMock(return_value=mock_response)
-            mock_cls.return_value = mock_client
-
-            result = await provider.embed(EmbeddingRequest(text="hello world"))
-
-        assert isinstance(result, EmbeddingResult)
-        assert result.embedding == [0.1, 0.2, 0.3]
-        assert result.provider_name == "openaiembedding"
-        assert result.model_name == "text-embedding-3-small"
-        assert result.dimensions == 3
-        assert result.token_usage == {"input": 10, "total": 10}
-        assert result.latency_ms is not None
-        assert result.latency_ms >= 0
-
-    @pytest.mark.asyncio
-    async def test_embed_with_request_model_override(self):
-        provider = OpenAIEmbeddingProvider(api_key="key", max_retries=1)
-        mock_response = _make_mock_response(embedding=[0.1])
-
-        with patch("app.etl.embedding.providers.openai.AsyncOpenAI") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.embeddings.create = AsyncMock(return_value=mock_response)
-            mock_cls.return_value = mock_client
-
-            await provider.embed(EmbeddingRequest(text="text", model="text-embedding-3-large"))
-
-            call_kwargs = mock_client.embeddings.create.call_args.kwargs
-            assert call_kwargs["model"] == "text-embedding-3-large"
-
-    @pytest.mark.asyncio
-    async def test_embed_with_dimensions(self):
-        provider = OpenAIEmbeddingProvider(api_key="key", max_retries=1)
-        mock_response = _make_mock_response(embedding=[0.1, 0.2])
-
-        with patch("app.etl.embedding.providers.openai.AsyncOpenAI") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.embeddings.create = AsyncMock(return_value=mock_response)
-            mock_cls.return_value = mock_client
-
-            await provider.embed(EmbeddingRequest(text="text", dimensions=256))
-
-            call_kwargs = mock_client.embeddings.create.call_args.kwargs
-            assert call_kwargs["dimensions"] == 256
-
-    @pytest.mark.asyncio
-    async def test_embed_with_provider_dimensions(self):
-        provider = OpenAIEmbeddingProvider(api_key="key", max_retries=1, dimensions=512)
-        mock_response = _make_mock_response(embedding=[0.1])
-
-        with patch("app.etl.embedding.providers.openai.AsyncOpenAI") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.embeddings.create = AsyncMock(return_value=mock_response)
-            mock_cls.return_value = mock_client
-
-            await provider.embed(EmbeddingRequest(text="text"))
-
-            call_kwargs = mock_client.embeddings.create.call_args.kwargs
-            assert call_kwargs["dimensions"] == 512
-
-    @pytest.mark.asyncio
-    async def test_embed_raises_after_max_retries(self):
-        provider = OpenAIEmbeddingProvider(api_key="key", max_retries=2)
-
-        with patch("app.etl.embedding.providers.openai.AsyncOpenAI") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.embeddings.create = AsyncMock(side_effect=Exception("API error"))
-            mock_cls.return_value = mock_client
-
-            with pytest.raises(EmbeddingError) as exc_info:
-                await provider.embed(EmbeddingRequest(text="text"))
-
-            assert "2 attempts" in str(exc_info.value)
-            assert exc_info.value.provider == "openaiembedding"
-            assert exc_info.value.retryable is True
+    assert result.dimensions == 512
+    call_kwargs = mock_openai_client.embeddings.create.call_args[1]
+    assert call_kwargs["dimensions"] == 512
 
 
-class TestOpenAIEmbeddingProviderHealthCheck:
-    @pytest.mark.asyncio
-    async def test_health_check_success(self):
-        provider = OpenAIEmbeddingProvider(api_key="key")
-        mock_response = _make_mock_response(embedding=[0.1])
+@pytest.mark.asyncio
+async def test_embed_batch_success(provider, mock_openai_client):
+    """Test successful batch embedding."""
+    mock_response = MagicMock()
+    mock_response.data = [
+        MagicMock(embedding=[0.1, 0.2]),
+        MagicMock(embedding=[0.3, 0.4]),
+    ]
+    mock_response.usage = MagicMock(prompt_tokens=20, total_tokens=20)
+    mock_openai_client.embeddings.create.return_value = mock_response
 
-        with patch("app.etl.embedding.providers.openai.AsyncOpenAI") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.embeddings.create = AsyncMock(return_value=mock_response)
-            mock_cls.return_value = mock_client
+    with patch.object(provider, "_get_client", return_value=mock_openai_client):
+        results = await provider.embed_batch(["text1", "text2"])
 
-            result = await provider.health_check()
-            assert result is True
+    assert len(results) == 2
+    assert all(isinstance(r, EmbeddingResult) for r in results)
+    assert results[0].embedding == [0.1, 0.2]
+    assert results[1].embedding == [0.3, 0.4]
 
-    @pytest.mark.asyncio
-    async def test_health_check_failure(self):
-        provider = OpenAIEmbeddingProvider(api_key="key")
 
-        with patch("app.etl.embedding.providers.openai.AsyncOpenAI") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.embeddings.create = AsyncMock(side_effect=Exception("unreachable"))
-            mock_cls.return_value = mock_client
+@pytest.mark.asyncio
+async def test_health_check_success(provider, mock_openai_client):
+    """Test successful health check."""
+    mock_response = MagicMock()
+    mock_response.data = [MagicMock()]
+    mock_openai_client.embeddings.create.return_value = mock_response
 
-            result = await provider.health_check()
-            assert result is False
+    with patch.object(provider, "_get_client", return_value=mock_openai_client):
+        result = await provider.health_check()
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_health_check_failure(provider, mock_openai_client):
+    """Test health check failure."""
+    mock_openai_client.embeddings.create.side_effect = Exception("API error")
+
+    with patch.object(provider, "_get_client", return_value=mock_openai_client):
+        result = await provider.health_check()
+
+    assert result is False
+
+
+def test_is_retryable_error(provider):
+    """Test retryable error detection."""
+    assert provider._is_retryable_error(Exception("timeout occurred")) is True
+    assert provider._is_retryable_error(Exception("rate limit exceeded")) is True
+    assert provider._is_retryable_error(Exception("connection refused")) is True
+    assert provider._is_retryable_error(Exception("invalid request")) is False

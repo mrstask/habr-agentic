@@ -18,7 +18,6 @@ import time
 from typing import Optional
 
 from openai import AsyncOpenAI
-from openai.types.images_response import ImagesResponse
 
 from app.etl.image_generation.base import (
     BaseImageGenerationProvider,
@@ -97,7 +96,7 @@ class OpenAIImageGenerationProvider(BaseImageGenerationProvider):
             try:
                 client = self._get_client()
 
-                response: ImagesResponse = await client.images.generate(
+                response = await client.images.generate(
                     model=model,
                     prompt=request.prompt,
                     size=request.size,
@@ -108,15 +107,13 @@ class OpenAIImageGenerationProvider(BaseImageGenerationProvider):
 
                 latency_ms = (time.time() - start_time) * 1000
 
-                # Extract image data from response
+                # Extract image URL or b64_json from response.data[0]
                 image_data = response.data[0]
-                image_url = image_data.url if hasattr(image_data, 'url') else None
-                image_b64 = image_data.b64_json if hasattr(image_data, 'b64_json') else None
+                image_url = getattr(image_data, "url", None)
+                image_b64 = getattr(image_data, "b64_json", None)
 
-                # Capture revised_prompt if available
-                revised_prompt = None
-                if hasattr(image_data, 'revised_prompt') and image_data.revised_prompt:
-                    revised_prompt = image_data.revised_prompt
+                # Capture revised_prompt from response if available
+                revised_prompt = getattr(image_data, "revised_prompt", None)
 
                 return ImageGenerationResult(
                     image_url=image_url,
@@ -152,13 +149,13 @@ class OpenAIImageGenerationProvider(BaseImageGenerationProvider):
         """
         try:
             client = self._get_client()
-            response: ImagesResponse = await client.images.generate(
+            response = await client.images.generate(
                 model=self.model,
                 prompt="a simple test",
                 size="1024x1024",
                 n=1,
             )
-            return len(response.data) > 0
+            return response.data is not None and len(response.data) > 0
         except Exception:
             return False
 

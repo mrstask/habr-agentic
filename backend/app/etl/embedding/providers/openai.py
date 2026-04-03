@@ -17,7 +17,6 @@ import time
 from typing import Optional
 
 from openai import AsyncOpenAI
-from openai.types import CreateEmbeddingResponse
 
 from app.etl.embedding.base import (
     BaseEmbeddingProvider,
@@ -109,7 +108,7 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
                 if dimensions is not None:
                     params["dimensions"] = dimensions
 
-                response: CreateEmbeddingResponse = await client.embeddings.create(**params)
+                response = await client.embeddings.create(**params)
 
                 embedding = response.data[0].embedding
                 latency_ms = (time.time() - start_time) * 1000
@@ -163,35 +162,24 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
         start_time = time.time()
         last_error = None
 
+        model = self.model
+        dimensions = self.dimensions
+
         for attempt in range(self.max_retries):
             try:
                 client = self._get_client()
 
                 params: dict = {
-                    "model": self.model,
+                    "model": model,
                     "input": texts,
                 }
-                if self.dimensions is not None:
-                    params["dimensions"] = self.dimensions
+                if dimensions is not None:
+                    params["dimensions"] = dimensions
 
-                response: CreateEmbeddingResponse = await client.embeddings.create(**params)
+                response = await client.embeddings.create(**params)
 
-                results: list[EmbeddingResult] = []
-                for item in response.data:
-                    embedding = item.embedding
-                    results.append(
-                        EmbeddingResult(
-                            embedding=embedding,
-                            provider_name=self.name,
-                            model_name=self.model,
-                            dimensions=len(embedding),
-                            token_usage=None,
-                            latency_ms=None,
-                        )
-                    )
-
-                # Set shared token usage and latency on all results
                 latency_ms = (time.time() - start_time) * 1000
+
                 token_usage = None
                 if response.usage:
                     token_usage = {
@@ -199,9 +187,19 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
                         "total": response.usage.total_tokens,
                     }
 
-                for result in results:
-                    result.token_usage = token_usage
-                    result.latency_ms = latency_ms
+                results = []
+                for i, data in enumerate(response.data):
+                    embedding = data.embedding
+                    results.append(
+                        EmbeddingResult(
+                            embedding=embedding,
+                            provider_name=self.name,
+                            model_name=model,
+                            dimensions=len(embedding),
+                            token_usage=token_usage,
+                            latency_ms=latency_ms,
+                        )
+                    )
 
                 return results
 
@@ -212,6 +210,7 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
                 if not self._is_retryable_error(e):
                     break
 
+        latency_ms = (time.time() - start_time) * 1000
         raise EmbeddingError(
             message=f"Batch embedding failed after {self.max_retries} attempts: {str(last_error)}",
             provider=self.name,
@@ -229,11 +228,11 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
         """
         try:
             client = self._get_client()
-            response: CreateEmbeddingResponse = await client.embeddings.create(
+            response = await client.embeddings.create(
                 model=self.model,
                 input="test",
             )
-            return len(response.data) > 0 and len(response.data[0].embedding) > 0
+            return response.data is not None and len(response.data) > 0
         except Exception:
             return False
 

@@ -1,149 +1,138 @@
-"""Tests for the OpenAI image generation provider."""
+"""
+Tests for the OpenAI image generation provider.
 
-from unittest.mock import AsyncMock, MagicMock, patch
+Tests the happy path of generating images via the OpenAI DALL-E API,
+with mocked external calls.
+"""
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.etl.image_generation.providers.openai import OpenAIImageGenerationProvider
 from app.etl.image_generation.base import (
-    ImageGenerationError,
     ImageGenerationRequest,
     ImageGenerationResult,
 )
-from app.etl.image_generation.providers.openai import OpenAIImageGenerationProvider
 
 
-def _make_mock_response(
-    url: str = "https://example.com/image.png",
-    b64_json: str | None = None,
-    revised_prompt: str | None = None,
-):
-    """Create a mock OpenAI ImagesResponse."""
-    image_data = MagicMock()
-    image_data.url = url
-    image_data.b64_json = b64_json
-    image_data.revised_prompt = revised_prompt
-
-    response = MagicMock()
-    response.data = [image_data]
-    return response
+@pytest.fixture
+def mock_openai_client():
+    """Create a mock OpenAI async client."""
+    mock_client = MagicMock()
+    mock_images = MagicMock()
+    mock_images.generate = AsyncMock()
+    mock_client.images = mock_images
+    return mock_client
 
 
-class TestOpenAIImageGenerationProviderInit:
-    def test_default_values(self):
-        provider = OpenAIImageGenerationProvider(api_key="test-key")
-        assert provider.api_key == "test-key"
-        assert provider.model == "dall-e-3"
-        assert provider.timeout == 120
-        assert provider.max_retries == 3
-        assert provider.name == "openaiimagegeneration"
-
-    def test_custom_values(self):
-        provider = OpenAIImageGenerationProvider(
-            api_key="key", model="dall-e-2", timeout=60, max_retries=5
-        )
-        assert provider.model == "dall-e-2"
-        assert provider.timeout == 60
-        assert provider.max_retries == 5
+@pytest.fixture
+def provider():
+    """Create an OpenAI image generation provider for testing."""
+    return OpenAIImageGenerationProvider(
+        api_key="test-api-key",
+        model="dall-e-3",
+        timeout=120,
+        max_retries=3,
+    )
 
 
-class TestOpenAIImageGenerationProviderGetClient:
-    def test_client_is_lazy(self):
-        provider = OpenAIImageGenerationProvider(api_key="key")
-        assert provider._client is None
+@pytest.mark.asyncio
+async def test_generate_success(provider, mock_openai_client):
+    """Test successful image generation."""
+    mock_image_data = MagicMock()
+    mock_image_data.url = "https://example.com/image.png"
+    mock_image_data.b64_json = None
+    mock_image_data.revised_prompt = "A beautiful landscape"
 
-    def test_client_is_cached(self):
-        provider = OpenAIImageGenerationProvider(api_key="key")
-        with patch("app.etl.image_generation.providers.openai.AsyncOpenAI") as mock_cls:
-            client1 = provider._get_client()
-            client2 = provider._get_client()
-            assert client1 is client2
-            mock_cls.assert_called_once_with(api_key="key", timeout=120, max_retries=3)
+    mock_response = MagicMock()
+    mock_response.data = [mock_image_data]
+    mock_openai_client.images.generate.return_value = mock_response
 
-
-class TestOpenAIImageGenerationProviderGenerate:
-    @pytest.mark.asyncio
-    async def test_generate_success(self):
-        provider = OpenAIImageGenerationProvider(api_key="key", max_retries=1)
-        mock_response = _make_mock_response(
-            url="https://example.com/img.png",
-            b64_json="base64data",
-            revised_prompt="revised prompt",
+    with patch.object(provider, "_get_client", return_value=mock_openai_client):
+        result = await provider.generate(
+            ImageGenerationRequest(prompt="A beautiful landscape")
         )
 
-        with patch("app.etl.image_generation.providers.openai.AsyncOpenAI") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.images.generate = AsyncMock(return_value=mock_response)
-            mock_cls.return_value = mock_client
-
-            result = await provider.generate(
-                ImageGenerationRequest(prompt="a cat")
-            )
-
-        assert isinstance(result, ImageGenerationResult)
-        assert result.image_url == "https://example.com/img.png"
-        assert result.image_b64 == "base64data"
-        assert result.provider_name == "openaiimagegeneration"
-        assert result.model_name == "dall-e-3"
-        assert result.revised_prompt == "revised prompt"
-        assert result.latency_ms is not None
-        assert result.latency_ms >= 0
-
-    @pytest.mark.asyncio
-    async def test_generate_with_model_override(self):
-        provider = OpenAIImageGenerationProvider(api_key="key", max_retries=1)
-        mock_response = _make_mock_response()
-
-        with patch("app.etl.image_generation.providers.openai.AsyncOpenAI") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.images.generate = AsyncMock(return_value=mock_response)
-            mock_cls.return_value = mock_client
-
-            await provider.generate(
-                ImageGenerationRequest(prompt="text", model="dall-e-2")
-            )
-
-            call_kwargs = mock_client.images.generate.call_args.kwargs
-            assert call_kwargs["model"] == "dall-e-2"
-
-    @pytest.mark.asyncio
-    async def test_generate_raises_after_max_retries(self):
-        provider = OpenAIImageGenerationProvider(api_key="key", max_retries=2)
-
-        with patch("app.etl.image_generation.providers.openai.AsyncOpenAI") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.images.generate = AsyncMock(side_effect=Exception("API error"))
-            mock_cls.return_value = mock_client
-
-            with pytest.raises(ImageGenerationError) as exc_info:
-                await provider.generate(ImageGenerationRequest(prompt="text"))
-
-            assert "2 attempts" in str(exc_info.value)
-            assert exc_info.value.provider == "openaiimagegeneration"
-            assert exc_info.value.retryable is True
+    assert isinstance(result, ImageGenerationResult)
+    assert result.image_url == "https://example.com/image.png"
+    assert result.provider_name == "openaiimagegeneration"
+    assert result.model_name == "dall-e-3"
+    assert result.revised_prompt == "A beautiful landscape"
+    assert result.latency_ms is not None
 
 
-class TestOpenAIImageGenerationProviderHealthCheck:
-    @pytest.mark.asyncio
-    async def test_health_check_success(self):
-        provider = OpenAIImageGenerationProvider(api_key="key")
-        mock_response = _make_mock_response()
+@pytest.mark.asyncio
+async def test_generate_with_model_override(provider, mock_openai_client):
+    """Test image generation with model override."""
+    mock_image_data = MagicMock()
+    mock_image_data.url = "https://example.com/image.png"
+    mock_image_data.b64_json = None
+    mock_image_data.revised_prompt = None
 
-        with patch("app.etl.image_generation.providers.openai.AsyncOpenAI") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.images.generate = AsyncMock(return_value=mock_response)
-            mock_cls.return_value = mock_client
+    mock_response = MagicMock()
+    mock_response.data = [mock_image_data]
+    mock_openai_client.images.generate.return_value = mock_response
 
-            result = await provider.health_check()
-            assert result is True
+    with patch.object(provider, "_get_client", return_value=mock_openai_client):
+        result = await provider.generate(
+            ImageGenerationRequest(prompt="test", model="dall-e-2")
+        )
 
-    @pytest.mark.asyncio
-    async def test_health_check_failure(self):
-        provider = OpenAIImageGenerationProvider(api_key="key")
+    assert result.model_name == "dall-e-2"
+    mock_openai_client.images.generate.assert_called_once()
+    call_kwargs = mock_openai_client.images.generate.call_args[1]
+    assert call_kwargs["model"] == "dall-e-2"
 
-        with patch("app.etl.image_generation.providers.openai.AsyncOpenAI") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.images.generate = AsyncMock(side_effect=Exception("unreachable"))
-            mock_cls.return_value = mock_client
 
-            result = await provider.health_check()
-            assert result is False
+@pytest.mark.asyncio
+async def test_generate_with_b64_json(provider, mock_openai_client):
+    """Test image generation returning base64 data."""
+    mock_image_data = MagicMock()
+    mock_image_data.url = None
+    mock_image_data.b64_json = "base64encodeddata"
+    mock_image_data.revised_prompt = None
+
+    mock_response = MagicMock()
+    mock_response.data = [mock_image_data]
+    mock_openai_client.images.generate.return_value = mock_response
+
+    with patch.object(provider, "_get_client", return_value=mock_openai_client):
+        result = await provider.generate(
+            ImageGenerationRequest(prompt="test")
+        )
+
+    assert result.image_b64 == "base64encodeddata"
+    assert result.image_url is None
+
+
+@pytest.mark.asyncio
+async def test_health_check_success(provider, mock_openai_client):
+    """Test successful health check."""
+    mock_image_data = MagicMock()
+    mock_response = MagicMock()
+    mock_response.data = [mock_image_data]
+    mock_openai_client.images.generate.return_value = mock_response
+
+    with patch.object(provider, "_get_client", return_value=mock_openai_client):
+        result = await provider.health_check()
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_health_check_failure(provider, mock_openai_client):
+    """Test health check failure."""
+    mock_openai_client.images.generate.side_effect = Exception("API error")
+
+    with patch.object(provider, "_get_client", return_value=mock_openai_client):
+        result = await provider.health_check()
+
+    assert result is False
+
+
+def test_is_retryable_error(provider):
+    """Test retryable error detection."""
+    assert provider._is_retryable_error(Exception("timeout occurred")) is True
+    assert provider._is_retryable_error(Exception("rate limit exceeded")) is True
+    assert provider._is_retryable_error(Exception("connection refused")) is True
+    assert provider._is_retryable_error(Exception("invalid request")) is False

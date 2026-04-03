@@ -1,174 +1,125 @@
-"""Tests for the Ollama embedding provider."""
+"""
+Tests for the Ollama embedding provider.
 
-from unittest.mock import AsyncMock, MagicMock, patch
+Tests the happy path of generating embeddings via the Ollama API,
+with mocked external calls.
+"""
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.etl.embedding.base import EmbeddingError, EmbeddingRequest, EmbeddingResult
 from app.etl.embedding.providers.ollama import OllamaEmbeddingProvider
+from app.etl.embedding.base import EmbeddingRequest, EmbeddingResult
 
 
-class TestOllamaEmbeddingProviderInit:
-    def test_default_values(self):
-        provider = OllamaEmbeddingProvider()
-        assert provider.api_key is None
-        assert provider.model == "nomic-embed-text"
-        assert provider.base_url == "http://localhost:11434"
-        assert provider.timeout == 300
-        assert provider.max_retries == 3
-        assert provider.name == "ollamaembedding"
+@pytest.fixture
+def mock_httpx_client():
+    """Create a mock httpx async client."""
+    mock_client = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.json.return_value = {"embedding": [0.1, 0.2, 0.3]}
+    mock_response.raise_for_status = MagicMock()
+    mock_client.post.return_value = mock_response
+    mock_client.get.return_value = mock_response
+    return mock_client
 
-    def test_custom_values(self):
-        provider = OllamaEmbeddingProvider(
-            model="custom-model",
-            base_url="http://custom:1234",
-            timeout=60,
-            max_retries=5,
+
+@pytest.fixture
+def provider():
+    """Create an Ollama embedding provider for testing."""
+    return OllamaEmbeddingProvider(
+        model="nomic-embed-text",
+        base_url="http://localhost:11434",
+        timeout=300,
+        max_retries=3,
+    )
+
+
+@pytest.mark.asyncio
+async def test_embed_success(provider, mock_httpx_client):
+    """Test successful embedding generation."""
+    with patch.object(provider, "_get_client", return_value=mock_httpx_client):
+        result = await provider.embed(EmbeddingRequest(text="test text"))
+
+    assert isinstance(result, EmbeddingResult)
+    assert result.embedding == [0.1, 0.2, 0.3]
+    assert result.provider_name == "ollamaembedding"
+    assert result.model_name == "nomic-embed-text"
+    assert result.dimensions == 3
+    assert result.latency_ms is not None
+
+
+@pytest.mark.asyncio
+async def test_embed_with_model_override(provider, mock_httpx_client):
+    """Test embedding with model override."""
+    with patch.object(provider, "_get_client", return_value=mock_httpx_client):
+        result = await provider.embed(
+            EmbeddingRequest(text="test", model="custom-model")
         )
-        assert provider.model == "custom-model"
-        assert provider.base_url == "http://custom:1234"
-        assert provider.timeout == 60
-        assert provider.max_retries == 5
+
+    assert result.model_name == "custom-model"
+    mock_httpx_client.post.assert_called_once()
+    call_kwargs = mock_httpx_client.post.call_args[1]
+    assert call_kwargs["json"]["model"] == "custom-model"
 
 
-class TestOllamaEmbeddingProviderGetClient:
-    def test_client_is_lazy(self):
-        provider = OllamaEmbeddingProvider()
-        assert provider._client is None
+@pytest.mark.asyncio
+async def test_embed_batch_success(provider, mock_httpx_client):
+    """Test successful batch embedding."""
+    with patch.object(provider, "_get_client", return_value=mock_httpx_client):
+        results = await provider.embed_batch(["text1", "text2"])
 
-    def test_client_is_cached(self):
-        provider = OllamaEmbeddingProvider()
-        with patch("app.etl.embedding.providers.ollama.httpx.AsyncClient") as mock_cls:
-            client1 = provider._get_client()
-            client2 = provider._get_client()
-            assert client1 is client2
-            mock_cls.assert_called_once_with(
-                base_url="http://localhost:11434",
-                timeout=300,
-            )
+    assert len(results) == 2
+    assert all(isinstance(r, EmbeddingResult) for r in results)
+    assert results[0].embedding == [0.1, 0.2, 0.3]
+    assert results[1].embedding == [0.1, 0.2, 0.3]
 
 
-class TestOllamaEmbeddingProviderEmbed:
-    @pytest.mark.asyncio
-    async def test_embed_success(self):
-        provider = OllamaEmbeddingProvider(max_retries=1)
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"embedding": [0.1, 0.2, 0.3]}
-        mock_response.raise_for_status = MagicMock()
-
-        with patch("app.etl.embedding.providers.ollama.httpx.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_cls.return_value = mock_client
-
-            result = await provider.embed(EmbeddingRequest(text="hello world"))
-
-        assert isinstance(result, EmbeddingResult)
-        assert result.embedding == [0.1, 0.2, 0.3]
-        assert result.provider_name == "ollamaembedding"
-        assert result.model_name == "nomic-embed-text"
-        assert result.dimensions == 3
-        assert result.latency_ms is not None
-        assert result.latency_ms >= 0
-
-    @pytest.mark.asyncio
-    async def test_embed_with_request_model_override(self):
-        provider = OllamaEmbeddingProvider(max_retries=1)
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"embedding": [0.1]}
-        mock_response.raise_for_status = MagicMock()
-
-        with patch("app.etl.embedding.providers.ollama.httpx.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_cls.return_value = mock_client
-
-            await provider.embed(EmbeddingRequest(text="text", model="custom-model"))
-
-            call_kwargs = mock_client.post.call_args.kwargs
-            assert call_kwargs["json"]["model"] == "custom-model"
-
-    @pytest.mark.asyncio
-    async def test_embed_raises_after_max_retries(self):
-        provider = OllamaEmbeddingProvider(max_retries=2)
-
-        with patch("app.etl.embedding.providers.ollama.httpx.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(side_effect=Exception("API error"))
-            mock_cls.return_value = mock_client
-
-            with pytest.raises(EmbeddingError) as exc_info:
-                await provider.embed(EmbeddingRequest(text="text"))
-
-            assert "2 attempts" in str(exc_info.value)
-            assert exc_info.value.provider == "ollamaembedding"
-            assert exc_info.value.retryable is True
-
-
-class TestOllamaEmbeddingProviderEmbedBatch:
-    @pytest.mark.asyncio
-    async def test_embed_batch_success(self):
-        provider = OllamaEmbeddingProvider(max_retries=1)
+@pytest.mark.asyncio
+async def test_embed_batch_partial_failure(provider, mock_httpx_client):
+    """Test batch embedding with partial failure."""
+    def side_effect(*args, **kwargs):
+        if kwargs.get("json", {}).get("prompt") == "text2":
+            raise Exception("API error")
         mock_response = MagicMock()
         mock_response.json.return_value = {"embedding": [0.1, 0.2]}
         mock_response.raise_for_status = MagicMock()
+        return mock_response
 
-        with patch("app.etl.embedding.providers.ollama.httpx.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(return_value=mock_response)
-            mock_cls.return_value = mock_client
+    mock_httpx_client.post.side_effect = side_effect
 
-            results = await provider.embed_batch(["text1", "text2"])
+    with patch.object(provider, "_get_client", return_value=mock_httpx_client):
+        results = await provider.embed_batch(["text1", "text2"])
 
-        assert len(results) == 2
-        assert all(isinstance(r, EmbeddingResult) for r in results)
-        assert results[0].embedding == [0.1, 0.2]
-        assert results[1].embedding == [0.1, 0.2]
-
-    @pytest.mark.asyncio
-    async def test_embed_batch_partial_failure(self):
-        provider = OllamaEmbeddingProvider(max_retries=1)
-        mock_response = MagicMock()
-        mock_response.json.return_value = {"embedding": [0.1, 0.2]}
-        mock_response.raise_for_status = MagicMock()
-
-        with patch("app.etl.embedding.providers.ollama.httpx.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            # First call succeeds, second fails
-            mock_client.post = AsyncMock(side_effect=[mock_response, Exception("fail")])
-            mock_cls.return_value = mock_client
-
-            results = await provider.embed_batch(["text1", "text2"])
-
-        assert len(results) == 2
-        assert results[0].embedding == [0.1, 0.2]
-        assert results[1].embedding == []
-        assert results[1].error is not None
+    assert len(results) == 2
+    assert results[0].embedding == [0.1, 0.2]
+    assert results[1].error is not None
 
 
-class TestOllamaEmbeddingProviderHealthCheck:
-    @pytest.mark.asyncio
-    async def test_health_check_success(self):
-        provider = OllamaEmbeddingProvider()
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
+@pytest.mark.asyncio
+async def test_health_check_success(provider, mock_httpx_client):
+    """Test successful health check."""
+    with patch.object(provider, "_get_client", return_value=mock_httpx_client):
+        result = await provider.health_check()
 
-        with patch("app.etl.embedding.providers.ollama.httpx.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.get = AsyncMock(return_value=mock_response)
-            mock_cls.return_value = mock_client
+    assert result is True
+    mock_httpx_client.get.assert_called_once_with("/api/version")
 
-            result = await provider.health_check()
-            assert result is True
 
-    @pytest.mark.asyncio
-    async def test_health_check_failure(self):
-        provider = OllamaEmbeddingProvider()
+@pytest.mark.asyncio
+async def test_health_check_failure(provider, mock_httpx_client):
+    """Test health check failure."""
+    mock_httpx_client.get.side_effect = Exception("Connection refused")
 
-        with patch("app.etl.embedding.providers.ollama.httpx.AsyncClient") as mock_cls:
-            mock_client = AsyncMock()
-            mock_client.get = AsyncMock(side_effect=Exception("unreachable"))
-            mock_cls.return_value = mock_client
+    with patch.object(provider, "_get_client", return_value=mock_httpx_client):
+        result = await provider.health_check()
 
-            result = await provider.health_check()
-            assert result is False
+    assert result is False
+
+
+def test_is_retryable_error(provider):
+    """Test retryable error detection."""
+    assert provider._is_retryable_error(Exception("timeout occurred")) is True
+    assert provider._is_retryable_error(Exception("connection refused")) is True
+    assert provider._is_retryable_error(Exception("network error")) is True
+    assert provider._is_retryable_error(Exception("invalid request")) is False

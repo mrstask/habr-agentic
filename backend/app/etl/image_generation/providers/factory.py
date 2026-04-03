@@ -36,7 +36,7 @@ def register_image_provider(
         provider_class: The provider class to register.
     """
     _IMAGE_PROVIDER_REGISTRY[name] = provider_class
-    logger.info("Registered image generation provider: %s", name)
+    logger.debug("Registered image generation provider: %s -> %s", name, provider_class.__name__)
 
 
 def get_registered_image_providers() -> list[str]:
@@ -50,7 +50,6 @@ def get_registered_image_providers() -> list[str]:
 
 
 def create_image_provider(
-    provider_name: str = "openai",
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     **kwargs,
@@ -62,7 +61,6 @@ def create_image_provider(
     and instantiates it with the provided configuration.
 
     Args:
-        provider_name: Provider identifier (default: 'openai').
         api_key: API key for the provider. If None, reads from settings.
         model: Model identifier. If None, uses settings default.
         **kwargs: Additional provider-specific configuration.
@@ -71,7 +69,7 @@ def create_image_provider(
         An initialized image generation provider instance.
 
     Raises:
-        ValueError: If the provider name is not registered.
+        ValueError: If no provider is registered.
         ImageGenerationError: If required configuration is missing.
     """
     # Resolve api_key from settings.OPENAI_API_KEY if not provided
@@ -81,32 +79,37 @@ def create_image_provider(
     # Raise ImageGenerationError if api_key is missing
     if not api_key:
         raise ImageGenerationError(
-            message="OPENAI_API_KEY is required for image generation",
-            provider=provider_name,
+            message="API key not provided for image generation provider",
+            provider="openai",
             retryable=False,
         )
 
-    # Resolve model from settings if not provided
+    # Resolve model from settings.IMAGE_GENERATION_MODEL if not provided
     if model is None:
         model = settings.IMAGE_GENERATION_MODEL
 
-    # Build kwargs with provider-specific settings (only if not already provided)
-    if "timeout" not in kwargs:
-        kwargs["timeout"] = settings.OPENAI_TIMEOUT_SECONDS
-    if "max_retries" not in kwargs:
-        kwargs["max_retries"] = settings.OPENAI_MAX_RETRIES
+    # Build kwargs with provider-specific settings (timeout, max_retries)
+    provider_kwargs: dict = {
+        "api_key": api_key,
+        "model": model,
+        "timeout": settings.OPENAI_TIMEOUT_SECONDS,
+        "max_retries": settings.OPENAI_MAX_RETRIES,
+    }
 
-    # Look up provider class in registry
-    if provider_name not in _IMAGE_PROVIDER_REGISTRY:
+    # Override with any explicitly passed kwargs
+    provider_kwargs.update(kwargs)
+
+    # Look up provider class in registry (default to 'openai')
+    provider_name = provider_kwargs.pop("provider_name", "openai")
+    provider_class = _IMAGE_PROVIDER_REGISTRY.get(provider_name)
+    if provider_class is None:
         raise ValueError(
             f"Unknown image generation provider: '{provider_name}'. "
             f"Available providers: {get_registered_image_providers()}"
         )
 
-    provider_class = _IMAGE_PROVIDER_REGISTRY[provider_name]
-
     # Instantiate and return the provider
-    return provider_class(api_key=api_key, model=model, **kwargs)
+    return provider_class(**provider_kwargs)
 
 
 # Auto-register providers on module import
@@ -117,11 +120,13 @@ def _auto_register() -> None:
     Called at module import time to populate the registry with
     OpenAIImageGenerationProvider.
     """
+    # Import OpenAIImageGenerationProvider and register as 'openai'
     try:
         from app.etl.image_generation.providers.openai import OpenAIImageGenerationProvider
+
         register_image_provider("openai", OpenAIImageGenerationProvider)
     except ImportError as e:
-        logger.warning("Could not register OpenAI image generation provider: %s", e)
+        logger.warning("Failed to register OpenAIImageGenerationProvider: %s", e)
 
 
 _auto_register()
