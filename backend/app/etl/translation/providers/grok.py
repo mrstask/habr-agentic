@@ -14,8 +14,6 @@ Usage::
     result = await provider.translate(TranslationRequest(source_text="..."))
 """
 
-import asyncio
-import logging
 import time
 from typing import Optional
 
@@ -23,17 +21,15 @@ from openai import AsyncOpenAI
 
 from app.etl.translation.base import (
     BaseTranslationProvider,
+    TranslationError,
     TranslationRequest,
     TranslationResult,
     ProofreadingResult,
-    TranslationError,
 )
 from app.etl.translation.prompts.loader import (
     load_translation_prompt,
     load_proofreading_prompt,
 )
-
-logger = logging.getLogger(__name__)
 
 
 class GrokTranslationProvider(BaseTranslationProvider):
@@ -75,14 +71,6 @@ class GrokTranslationProvider(BaseTranslationProvider):
         self.timeout: int = timeout
         self.max_retries: int = max_retries
 
-    def _create_client(self) -> AsyncOpenAI:
-        """Create an OpenAI-compatible async client configured for Grok."""
-        return AsyncOpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            timeout=self.timeout,
-        )
-
     async def translate(self, request: TranslationRequest) -> TranslationResult:
         """
         Translate text using the Grok API.
@@ -109,7 +97,12 @@ class GrokTranslationProvider(BaseTranslationProvider):
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                client = self._create_client()
+                client = AsyncOpenAI(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    timeout=self.timeout,
+                )
+
                 start_time = time.monotonic()
 
                 response = await client.chat.completions.create(
@@ -118,7 +111,6 @@ class GrokTranslationProvider(BaseTranslationProvider):
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": request.source_text},
                     ],
-                    temperature=0.3,
                 )
 
                 latency_ms = (time.monotonic() - start_time) * 1000
@@ -133,13 +125,6 @@ class GrokTranslationProvider(BaseTranslationProvider):
                         "total": response.usage.total_tokens,
                     }
 
-                logger.info(
-                    "Grok translation completed: %d tokens, %.0fms (attempt %d)",
-                    token_usage.get("total", 0) if token_usage else 0,
-                    latency_ms,
-                    attempt,
-                )
-
                 return TranslationResult(
                     translated_text=translated_text,
                     provider_name=self.name,
@@ -150,14 +135,7 @@ class GrokTranslationProvider(BaseTranslationProvider):
 
             except Exception as exc:
                 last_error = exc
-                logger.warning(
-                    "Grok translation attempt %d/%d failed: %s",
-                    attempt,
-                    self.max_retries,
-                    exc,
-                )
-                if attempt < self.max_retries:
-                    await asyncio.sleep(2 ** attempt)
+                continue
 
         raise TranslationError(
             message=f"Translation failed after {self.max_retries} attempts: {last_error}",
@@ -189,7 +167,12 @@ class GrokTranslationProvider(BaseTranslationProvider):
 
         for attempt in range(1, self.max_retries + 1):
             try:
-                client = self._create_client()
+                client = AsyncOpenAI(
+                    api_key=self.api_key,
+                    base_url=self.base_url,
+                    timeout=self.timeout,
+                )
+
                 start_time = time.monotonic()
 
                 response = await client.chat.completions.create(
@@ -198,15 +181,11 @@ class GrokTranslationProvider(BaseTranslationProvider):
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": text},
                     ],
-                    temperature=0.2,
                 )
 
                 latency_ms = (time.monotonic() - start_time) * 1000
 
                 corrected_text = response.choices[0].message.content or ""
-
-                # Count corrections by comparing original and corrected text
-                corrections_made = self._estimate_corrections(text, corrected_text)
 
                 token_usage = None
                 if response.usage:
@@ -216,13 +195,7 @@ class GrokTranslationProvider(BaseTranslationProvider):
                         "total": response.usage.total_tokens,
                     }
 
-                logger.info(
-                    "Grok proofreading completed: %d corrections, %d tokens, %.0fms (attempt %d)",
-                    corrections_made,
-                    token_usage.get("total", 0) if token_usage else 0,
-                    latency_ms,
-                    attempt,
-                )
+                corrections_made = self._estimate_corrections(text, corrected_text)
 
                 return ProofreadingResult(
                     corrected_text=corrected_text,
@@ -235,14 +208,7 @@ class GrokTranslationProvider(BaseTranslationProvider):
 
             except Exception as exc:
                 last_error = exc
-                logger.warning(
-                    "Grok proofreading attempt %d/%d failed: %s",
-                    attempt,
-                    self.max_retries,
-                    exc,
-                )
-                if attempt < self.max_retries:
-                    await asyncio.sleep(2 ** attempt)
+                continue
 
         raise TranslationError(
             message=f"Proofreading failed after {self.max_retries} attempts: {last_error}",
@@ -261,15 +227,21 @@ class GrokTranslationProvider(BaseTranslationProvider):
             True if the API responds successfully, False otherwise.
         """
         try:
-            client = self._create_client()
+            client = AsyncOpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                timeout=10,
+            )
+
             response = await client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": "Say 'ok'"}],
-                max_tokens=10,
+                max_tokens=5,
             )
-            return response is not None and len(response.choices) > 0
-        except Exception as exc:
-            logger.warning("Grok health check failed: %s", exc)
+
+            return len(response.choices) > 0
+
+        except Exception:
             return False
 
     def _build_system_prompt(
@@ -317,24 +289,17 @@ class GrokTranslationProvider(BaseTranslationProvider):
     @staticmethod
     def _estimate_corrections(original: str, corrected: str) -> int:
         """
-        Estimate the number of corrections by comparing original and corrected text.
+        Estimate the number of corrections made between original and corrected text.
 
-        Uses a simple word-level diff to count changes.
+        Uses a simple word-level symmetric difference to count changed words.
 
         Args:
-            original: The original text before proofreading.
-            corrected: The corrected text after proofreading.
+            original: The original text.
+            corrected: The corrected text.
 
         Returns:
-            Estimated number of corrections made.
+            Estimated number of corrections (changed words).
         """
-        if original == corrected:
-            return 0
-
         original_words = set(original.split())
         corrected_words = set(corrected.split())
-
-        added = corrected_words - original_words
-        removed = original_words - corrected_words
-
-        return len(added) + len(removed)
+        return len(original_words.symmetric_difference(corrected_words))
