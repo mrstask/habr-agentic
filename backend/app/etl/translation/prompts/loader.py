@@ -41,13 +41,15 @@ def load_translation_prompt(
     template_path = _PROMPTS_DIR / "translation.txt"
     template = template_path.read_text(encoding="utf-8")
 
-    context_info = f"- Article context: {context}" if context else ""
+    context_info = ""
+    if context:
+        context_info = f"\nContext about the article: {context}"
 
-    prompt = template.replace("{source_language}", source_language)
-    prompt = prompt.replace("{target_language}", target_language)
-    prompt = prompt.replace("{context_info}", context_info)
-
-    return prompt
+    return template.format(
+        source_language=source_language,
+        target_language=target_language,
+        context_info=context_info,
+    )
 
 
 def load_proofreading_prompt(
@@ -68,11 +70,11 @@ def load_proofreading_prompt(
     template_path = _PROMPTS_DIR / "proofreading.txt"
     template = template_path.read_text(encoding="utf-8")
 
-    context_info = f"- Article context: {context}" if context else ""
+    context_info = ""
+    if context:
+        context_info = f"\nContext about the article: {context}"
 
-    prompt = template.replace("{context_info}", context_info)
-
-    return prompt
+    return template.format(context_info=context_info)
 
 
 def load_content_filter_prompt() -> str:

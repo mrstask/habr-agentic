@@ -14,6 +14,7 @@ Usage::
     result = await provider.translate(TranslationRequest(source_text="..."))
 """
 
+import logging
 import time
 from typing import Optional
 
@@ -30,6 +31,8 @@ from app.etl.translation.prompts.loader import (
     load_translation_prompt,
     load_proofreading_prompt,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAITranslationProvider(BaseTranslationProvider):
@@ -91,13 +94,12 @@ class OpenAITranslationProvider(BaseTranslationProvider):
         last_error: Optional[Exception] = None
 
         for attempt in range(1, self.max_retries + 1):
+            start_time = time.monotonic()
             try:
                 client = AsyncOpenAI(
                     api_key=self.api_key,
                     timeout=self.timeout,
                 )
-
-                start_time = time.monotonic()
 
                 response = await client.chat.completions.create(
                     model=self.model,
@@ -108,7 +110,6 @@ class OpenAITranslationProvider(BaseTranslationProvider):
                 )
 
                 latency_ms = (time.monotonic() - start_time) * 1000
-
                 translated_text = response.choices[0].message.content or ""
 
                 token_usage = None
@@ -129,7 +130,15 @@ class OpenAITranslationProvider(BaseTranslationProvider):
 
             except Exception as exc:
                 last_error = exc
-                continue
+                latency_ms = (time.monotonic() - start_time) * 1000
+                logger.warning(
+                    "OpenAI translation attempt %d/%d failed: %s",
+                    attempt,
+                    self.max_retries,
+                    exc,
+                )
+                if attempt < self.max_retries:
+                    continue
 
         raise TranslationError(
             message=f"Translation failed after {self.max_retries} attempts: {last_error}",
@@ -159,13 +168,12 @@ class OpenAITranslationProvider(BaseTranslationProvider):
         last_error: Optional[Exception] = None
 
         for attempt in range(1, self.max_retries + 1):
+            start_time = time.monotonic()
             try:
                 client = AsyncOpenAI(
                     api_key=self.api_key,
                     timeout=self.timeout,
                 )
-
-                start_time = time.monotonic()
 
                 response = await client.chat.completions.create(
                     model=self.model,
@@ -176,8 +184,10 @@ class OpenAITranslationProvider(BaseTranslationProvider):
                 )
 
                 latency_ms = (time.monotonic() - start_time) * 1000
-
                 corrected_text = response.choices[0].message.content or ""
+
+                # Count corrections using symmetric difference of word sets
+                corrections_made = self._estimate_corrections(text, corrected_text)
 
                 token_usage = None
                 if response.usage:
@@ -186,8 +196,6 @@ class OpenAITranslationProvider(BaseTranslationProvider):
                         "output": response.usage.completion_tokens,
                         "total": response.usage.total_tokens,
                     }
-
-                corrections_made = self._estimate_corrections(text, corrected_text)
 
                 return ProofreadingResult(
                     corrected_text=corrected_text,
@@ -200,7 +208,14 @@ class OpenAITranslationProvider(BaseTranslationProvider):
 
             except Exception as exc:
                 last_error = exc
-                continue
+                logger.warning(
+                    "OpenAI proofreading attempt %d/%d failed: %s",
+                    attempt,
+                    self.max_retries,
+                    exc,
+                )
+                if attempt < self.max_retries:
+                    continue
 
         raise TranslationError(
             message=f"Proofreading failed after {self.max_retries} attempts: {last_error}",
@@ -221,17 +236,14 @@ class OpenAITranslationProvider(BaseTranslationProvider):
         try:
             client = AsyncOpenAI(
                 api_key=self.api_key,
-                timeout=10,
+                timeout=30,
             )
-
             response = await client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": "Say 'ok'"}],
-                max_tokens=5,
+                max_tokens=10,
             )
-
-            return len(response.choices) > 0
-
+            return response is not None and len(response.choices) > 0
         except Exception:
             return False
 
@@ -279,17 +291,18 @@ class OpenAITranslationProvider(BaseTranslationProvider):
     @staticmethod
     def _estimate_corrections(original: str, corrected: str) -> int:
         """
-        Estimate the number of corrections made between original and corrected text.
-
-        Uses a simple word-level symmetric difference to count changed words.
+        Estimate the number of corrections using symmetric difference of word sets.
 
         Args:
             original: The original text.
             corrected: The corrected text.
 
         Returns:
-            Estimated number of corrections (changed words).
+            Size of the symmetric difference between word sets.
         """
+        if original == corrected:
+            return 0
+
         original_words = set(original.split())
         corrected_words = set(corrected.split())
         return len(original_words.symmetric_difference(corrected_words))
