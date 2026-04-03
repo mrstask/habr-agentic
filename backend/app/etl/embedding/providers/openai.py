@@ -95,27 +95,25 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
         start_time = time.time()
         last_error = None
 
+        model = request.model or self.model
+        dimensions = request.dimensions or self.dimensions
+
         for attempt in range(self.max_retries):
             try:
                 client = self._get_client()
 
-                # Build kwargs for the API call
-                api_kwargs: dict = {
-                    "model": request.model or self.model,
+                params: dict = {
+                    "model": model,
                     "input": request.text,
                 }
-                if request.dimensions is not None or self.dimensions is not None:
-                    api_kwargs["dimensions"] = request.dimensions or self.dimensions
+                if dimensions is not None:
+                    params["dimensions"] = dimensions
 
-                response: CreateEmbeddingResponse = await client.embeddings.create(
-                    **api_kwargs,
-                )
+                response: CreateEmbeddingResponse = await client.embeddings.create(**params)
 
-                # Extract embedding vector from response
                 embedding = response.data[0].embedding
-
-                # Capture token usage and latency
                 latency_ms = (time.time() - start_time) * 1000
+
                 token_usage = None
                 if response.usage:
                     token_usage = {
@@ -123,14 +121,11 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
                         "total": response.usage.total_tokens,
                     }
 
-                # Determine actual dimensions
-                actual_dimensions = len(embedding)
-
                 return EmbeddingResult(
                     embedding=embedding,
                     provider_name=self.name,
-                    model_name=request.model or self.model,
-                    dimensions=actual_dimensions,
+                    model_name=model,
+                    dimensions=len(embedding),
                     token_usage=token_usage,
                     latency_ms=latency_ms,
                 )
@@ -144,7 +139,7 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
 
         latency_ms = (time.time() - start_time) * 1000
         raise EmbeddingError(
-            message=f"Embedding generation failed after {self.max_retries} attempts: {str(last_error)}",
+            message=f"Embedding failed after {self.max_retries} attempts: {str(last_error)}",
             provider=self.name,
             retryable=True,
         )
@@ -172,19 +167,30 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
             try:
                 client = self._get_client()
 
-                # Build kwargs for the API call
-                api_kwargs: dict = {
+                params: dict = {
                     "model": self.model,
                     "input": texts,
                 }
                 if self.dimensions is not None:
-                    api_kwargs["dimensions"] = self.dimensions
+                    params["dimensions"] = self.dimensions
 
-                response: CreateEmbeddingResponse = await client.embeddings.create(
-                    **api_kwargs,
-                )
+                response: CreateEmbeddingResponse = await client.embeddings.create(**params)
 
-                # Capture token usage and latency
+                results: list[EmbeddingResult] = []
+                for item in response.data:
+                    embedding = item.embedding
+                    results.append(
+                        EmbeddingResult(
+                            embedding=embedding,
+                            provider_name=self.name,
+                            model_name=self.model,
+                            dimensions=len(embedding),
+                            token_usage=None,
+                            latency_ms=None,
+                        )
+                    )
+
+                # Set shared token usage and latency on all results
                 latency_ms = (time.time() - start_time) * 1000
                 token_usage = None
                 if response.usage:
@@ -193,21 +199,9 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
                         "total": response.usage.total_tokens,
                     }
 
-                # Build results for each text
-                results: list[EmbeddingResult] = []
-                for i, item in enumerate(response.data):
-                    embedding = item.embedding
-                    actual_dimensions = len(embedding)
-                    results.append(
-                        EmbeddingResult(
-                            embedding=embedding,
-                            provider_name=self.name,
-                            model_name=self.model,
-                            dimensions=actual_dimensions,
-                            token_usage=token_usage,
-                            latency_ms=latency_ms,
-                        )
-                    )
+                for result in results:
+                    result.token_usage = token_usage
+                    result.latency_ms = latency_ms
 
                 return results
 
@@ -218,7 +212,6 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
                 if not self._is_retryable_error(e):
                     break
 
-        latency_ms = (time.time() - start_time) * 1000
         raise EmbeddingError(
             message=f"Batch embedding failed after {self.max_retries} attempts: {str(last_error)}",
             provider=self.name,

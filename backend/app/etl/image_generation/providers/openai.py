@@ -91,12 +91,14 @@ class OpenAIImageGenerationProvider(BaseImageGenerationProvider):
         start_time = time.time()
         last_error = None
 
+        model = request.model or self.model
+
         for attempt in range(self.max_retries):
             try:
                 client = self._get_client()
 
                 response: ImagesResponse = await client.images.generate(
-                    model=request.model or self.model,
+                    model=model,
                     prompt=request.prompt,
                     size=request.size,
                     quality=request.quality,
@@ -104,22 +106,23 @@ class OpenAIImageGenerationProvider(BaseImageGenerationProvider):
                     n=request.n,
                 )
 
-                # Extract image URL or b64_json from response
-                image_data = response.data[0]
-                image_url = image_data.url
-                image_b64 = image_data.b64_json
-
-                # Capture revised_prompt from response if available
-                revised_prompt = image_data.revised_prompt
-
-                # Capture latency
                 latency_ms = (time.time() - start_time) * 1000
+
+                # Extract image data from response
+                image_data = response.data[0]
+                image_url = image_data.url if hasattr(image_data, 'url') else None
+                image_b64 = image_data.b64_json if hasattr(image_data, 'b64_json') else None
+
+                # Capture revised_prompt if available
+                revised_prompt = None
+                if hasattr(image_data, 'revised_prompt') and image_data.revised_prompt:
+                    revised_prompt = image_data.revised_prompt
 
                 return ImageGenerationResult(
                     image_url=image_url,
                     image_b64=image_b64,
                     provider_name=self.name,
-                    model_name=request.model or self.model,
+                    model_name=model,
                     revised_prompt=revised_prompt,
                     latency_ms=latency_ms,
                 )

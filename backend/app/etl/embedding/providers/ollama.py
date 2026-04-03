@@ -91,34 +91,30 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
         start_time = time.time()
         last_error = None
 
+        model = request.model or self.model
+
         for attempt in range(self.max_retries):
             try:
                 client = self._get_client()
 
-                # Build request payload
-                payload = {
-                    "model": request.model or self.model,
-                    "prompt": request.text,
-                }
-
-                response = await client.post("/api/embeddings", json=payload)
+                response = await client.post(
+                    "/api/embeddings",
+                    json={
+                        "model": model,
+                        "prompt": request.text,
+                    },
+                )
                 response.raise_for_status()
-                data = response.json()
+                response_data = response.json()
 
-                # Extract embedding vector from response
-                embedding = data["embedding"]
-
-                # Capture latency
+                embedding = response_data["embedding"]
                 latency_ms = (time.time() - start_time) * 1000
-
-                # Determine actual dimensions
-                actual_dimensions = len(embedding)
 
                 return EmbeddingResult(
                     embedding=embedding,
                     provider_name=self.name,
-                    model_name=request.model or self.model,
-                    dimensions=actual_dimensions,
+                    model_name=model,
+                    dimensions=len(embedding),
                     latency_ms=latency_ms,
                 )
 
@@ -131,7 +127,7 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
 
         latency_ms = (time.time() - start_time) * 1000
         raise EmbeddingError(
-            message=f"Embedding generation failed after {self.max_retries} attempts: {str(last_error)}",
+            message=f"Embedding failed after {self.max_retries} attempts: {str(last_error)}",
             provider=self.name,
             retryable=True,
         )
@@ -152,20 +148,22 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
         Raises:
             EmbeddingError: If the batch embedding fails after retries.
         """
+        # Ollama doesn't have a native batch API, so we call embed() for each text
         results: list[EmbeddingResult] = []
         for text in texts:
+            request = EmbeddingRequest(text=text, model=self.model)
             try:
-                result = await self.embed(EmbeddingRequest(text=text))
+                result = await self.embed(request)
                 results.append(result)
-            except EmbeddingError:
-                # Handle partial failures gracefully
+            except EmbeddingError as e:
+                # For partial failures, return result with error
                 results.append(
                     EmbeddingResult(
                         embedding=[],
                         provider_name=self.name,
                         model_name=self.model,
                         dimensions=0,
-                        error=f"Failed to embed text: {text[:100]}",
+                        error=str(e),
                     )
                 )
         return results
@@ -181,6 +179,7 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
         """
         try:
             client = self._get_client()
+            # Try to get version info as health check
             response = await client.get("/api/version")
             response.raise_for_status()
             return True
@@ -201,9 +200,10 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
         retryable_patterns = [
             "timeout",
             "connection",
-            "refused",
-            "service unavailable",
-            "internal server error",
-            "gateway",
+            "network",
+            "connection refused",
+            "connection error",
+            "read error",
+            "write error",
         ]
         return any(pattern in error_str for pattern in retryable_patterns)

@@ -15,8 +15,8 @@ Usage::
 import logging
 from typing import Optional
 
-from app.etl.image_generation.base import BaseImageGenerationProvider, ImageGenerationError
 from app.core.config import settings
+from app.etl.image_generation.base import BaseImageGenerationProvider, ImageGenerationError
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ def get_registered_image_providers() -> list[str]:
 
 
 def create_image_provider(
+    provider_name: str = "openai",
     api_key: Optional[str] = None,
     model: Optional[str] = None,
     **kwargs,
@@ -61,6 +62,7 @@ def create_image_provider(
     and instantiates it with the provided configuration.
 
     Args:
+        provider_name: Provider identifier (default: 'openai').
         api_key: API key for the provider. If None, reads from settings.
         model: Model identifier. If None, uses settings default.
         **kwargs: Additional provider-specific configuration.
@@ -69,7 +71,7 @@ def create_image_provider(
         An initialized image generation provider instance.
 
     Raises:
-        ValueError: If no provider is registered.
+        ValueError: If the provider name is not registered.
         ImageGenerationError: If required configuration is missing.
     """
     # Resolve api_key from settings.OPENAI_API_KEY if not provided
@@ -79,8 +81,8 @@ def create_image_provider(
     # Raise ImageGenerationError if api_key is missing
     if not api_key:
         raise ImageGenerationError(
-            message="OpenAI API key is required for image generation",
-            provider="openai",
+            message="OPENAI_API_KEY is required for image generation",
+            provider=provider_name,
             retryable=False,
         )
 
@@ -88,27 +90,23 @@ def create_image_provider(
     if model is None:
         model = settings.IMAGE_GENERATION_MODEL
 
-    # Build kwargs with provider-specific settings
-    provider_kwargs: dict = {
-        "timeout": kwargs.get("timeout", settings.OPENAI_TIMEOUT_SECONDS),
-        "max_retries": kwargs.get("max_retries", settings.OPENAI_MAX_RETRIES),
-    }
+    # Build kwargs with provider-specific settings (only if not already provided)
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = settings.OPENAI_TIMEOUT_SECONDS
+    if "max_retries" not in kwargs:
+        kwargs["max_retries"] = settings.OPENAI_MAX_RETRIES
 
-    # Merge any additional kwargs
-    for key, value in kwargs.items():
-        if key not in provider_kwargs:
-            provider_kwargs[key] = value
-
-    # Look up provider class in registry (default to 'openai')
-    provider_name = kwargs.get("provider_name", "openai")
+    # Look up provider class in registry
     if provider_name not in _IMAGE_PROVIDER_REGISTRY:
         raise ValueError(
             f"Unknown image generation provider: '{provider_name}'. "
-            f"Available: {get_registered_image_providers()}"
+            f"Available providers: {get_registered_image_providers()}"
         )
 
     provider_class = _IMAGE_PROVIDER_REGISTRY[provider_name]
-    return provider_class(api_key=api_key, model=model, **provider_kwargs)
+
+    # Instantiate and return the provider
+    return provider_class(api_key=api_key, model=model, **kwargs)
 
 
 # Auto-register providers on module import
@@ -123,7 +121,7 @@ def _auto_register() -> None:
         from app.etl.image_generation.providers.openai import OpenAIImageGenerationProvider
         register_image_provider("openai", OpenAIImageGenerationProvider)
     except ImportError as e:
-        logger.warning("Could not register OpenAIImageGenerationProvider: %s", e)
+        logger.warning("Could not register OpenAI image generation provider: %s", e)
 
 
 _auto_register()

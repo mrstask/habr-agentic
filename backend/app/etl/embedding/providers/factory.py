@@ -15,8 +15,8 @@ Usage::
 import logging
 from typing import Optional
 
-from app.etl.embedding.base import BaseEmbeddingProvider, EmbeddingError
 from app.core.config import settings
+from app.etl.embedding.base import BaseEmbeddingProvider, EmbeddingError
 
 logger = logging.getLogger(__name__)
 
@@ -77,19 +77,19 @@ def create_embedding_provider(
     if provider_name not in _EMBEDDING_PROVIDER_REGISTRY:
         raise ValueError(
             f"Unknown embedding provider: '{provider_name}'. "
-            f"Available: {get_registered_embedding_providers()}"
+            f"Available providers: {get_registered_embedding_providers()}"
         )
 
     provider_class = _EMBEDDING_PROVIDER_REGISTRY[provider_name]
 
-    # Resolve API key from settings if not provided
+    # Resolve api_key from settings if not provided
     if api_key is None and provider_name == "openai":
         api_key = settings.OPENAI_API_KEY
 
     # Raise EmbeddingError if api_key is missing for cloud providers
     if provider_name == "openai" and not api_key:
         raise EmbeddingError(
-            message="OpenAI API key is required for the openai embedding provider",
+            message="OPENAI_API_KEY is required for the OpenAI embedding provider",
             provider=provider_name,
             retryable=False,
         )
@@ -101,24 +101,31 @@ def create_embedding_provider(
         elif provider_name == "ollama":
             model = settings.OLLAMA_EMBEDDING_MODEL
 
-    # Build kwargs with provider-specific settings
-    provider_kwargs: dict = {}
+    # Build kwargs with provider-specific settings (only if not already provided)
     if provider_name == "openai":
-        provider_kwargs["timeout"] = kwargs.get("timeout", settings.OPENAI_TIMEOUT_SECONDS)
-        provider_kwargs["max_retries"] = kwargs.get("max_retries", settings.OPENAI_MAX_RETRIES)
-        if "dimensions" in kwargs:
-            provider_kwargs["dimensions"] = kwargs["dimensions"]
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = settings.OPENAI_TIMEOUT_SECONDS
+        if "max_retries" not in kwargs:
+            kwargs["max_retries"] = settings.OPENAI_MAX_RETRIES
+        if "dimensions" not in kwargs:
+            kwargs["dimensions"] = settings.EMBEDDING_DIMENSIONS
     elif provider_name == "ollama":
-        provider_kwargs["base_url"] = kwargs.get("base_url", settings.OLLAMA_BASE_URL)
-        provider_kwargs["timeout"] = kwargs.get("timeout", settings.OLLAMA_TIMEOUT_SECONDS)
-        provider_kwargs["max_retries"] = kwargs.get("max_retries", 3)
+        if "base_url" not in kwargs:
+            kwargs["base_url"] = settings.OLLAMA_BASE_URL
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = settings.OLLAMA_TIMEOUT_SECONDS
+        if "max_retries" not in kwargs:
+            kwargs["max_retries"] = 3
 
-    # Merge any additional kwargs
-    for key, value in kwargs.items():
-        if key not in provider_kwargs:
-            provider_kwargs[key] = value
-
-    return provider_class(api_key=api_key, model=model, **provider_kwargs)
+    # Instantiate and return the provider
+    # For openai, api_key is required; for others, pass api_key if provided
+    if provider_name == "openai":
+        return provider_class(api_key=api_key, model=model, **kwargs)
+    elif provider_name == "ollama":
+        return provider_class(model=model, **kwargs)
+    else:
+        # Generic provider - pass api_key and model if provided
+        return provider_class(api_key=api_key, model=model, **kwargs)
 
 
 # Auto-register providers on module import
@@ -133,13 +140,13 @@ def _auto_register() -> None:
         from app.etl.embedding.providers.openai import OpenAIEmbeddingProvider
         register_embedding_provider("openai", OpenAIEmbeddingProvider)
     except ImportError as e:
-        logger.warning("Could not register OpenAIEmbeddingProvider: %s", e)
+        logger.warning("Could not register OpenAI embedding provider: %s", e)
 
     try:
         from app.etl.embedding.providers.ollama import OllamaEmbeddingProvider
         register_embedding_provider("ollama", OllamaEmbeddingProvider)
     except ImportError as e:
-        logger.warning("Could not register OllamaEmbeddingProvider: %s", e)
+        logger.warning("Could not register Ollama embedding provider: %s", e)
 
 
 _auto_register()
