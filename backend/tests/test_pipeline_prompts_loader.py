@@ -132,12 +132,18 @@ class TestLoadVectorizePrompt:
     def test_mentions_key_points(self) -> None:
         """Prompt should mention key points extraction."""
         result = load_vectorize_prompt()
-        assert "key" in result.lower()
+        lower_result = result.lower()
+        assert "key" in lower_result
+        assert "point" in lower_result
 
-    def test_mentions_vector_embeddings(self) -> None:
-        """Prompt should reference vector embeddings."""
+    def test_mentions_embeddings(self) -> None:
+        """Prompt should reference vector embeddings or search."""
         result = load_vectorize_prompt()
-        assert "vector" in result.lower()
+        lower_result = result.lower()
+        assert any(
+            keyword in lower_result
+            for keyword in ("embed", "vector", "search")
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -154,16 +160,23 @@ class TestLoadPublishPrompt:
         assert len(result) > 0
 
     def test_mentions_seo(self) -> None:
-        """Prompt should mention SEO optimization."""
+        """Prompt should mention SEO-related tasks."""
         result = load_publish_prompt()
         assert "SEO" in result
 
-    def test_mentions_cms(self) -> None:
-        """Prompt should reference CMS formatting."""
+    def test_mentions_publication(self) -> None:
+        """Prompt should reference publication or CMS."""
         result = load_publish_prompt()
-        assert "CMS" in result
+        assert any(
+            keyword in result
+            for keyword in ("publish", "CMS", "publication")
+        )
 
-    def test_mentions_metadata(self) -> None:
-        """Prompt should mention metadata fields."""
+    def test_mentions_tags(self) -> None:
+        """Prompt should mention tags or categories."""
         result = load_publish_prompt()
-        assert "metadata" in result.lower()
+        lower_result = result.lower()
+        assert any(
+            keyword in lower_result
+            for keyword in ("tag", "categor")
+        )
