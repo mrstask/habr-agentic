@@ -41,9 +41,11 @@ def load_translation_prompt(
     template_path = _PROMPTS_DIR / "translation.txt"
     template = template_path.read_text(encoding="utf-8")
 
-    context_info = ""
+    # Build context info line
     if context:
-        context_info = f"\nContext about the article: {context}"
+        context_info = f"\nArticle context: {context}"
+    else:
+        context_info = ""
 
     return template.format(
         source_language=source_language,
@@ -70,9 +72,11 @@ def load_proofreading_prompt(
     template_path = _PROMPTS_DIR / "proofreading.txt"
     template = template_path.read_text(encoding="utf-8")
 
-    context_info = ""
+    # Build context info line
     if context:
-        context_info = f"\nContext about the article: {context}"
+        context_info = f"\nArticle context: {context}"
+    else:
+        context_info = ""
 
     return template.format(context_info=context_info)
 

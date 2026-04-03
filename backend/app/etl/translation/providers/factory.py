@@ -70,11 +70,12 @@ def create_provider(
         ValueError: If the provider name is not registered.
         TranslationError: If required configuration is missing.
     """
-    if provider_name not in _PROVIDER_REGISTRY:
-        available = ", ".join(_PROVIDER_REGISTRY.keys())
+    # Look up provider_name in _PROVIDER_REGISTRY
+    provider_class = _PROVIDER_REGISTRY.get(provider_name)
+    if provider_class is None:
         raise ValueError(
             f"Unknown translation provider: '{provider_name}'. "
-            f"Available providers: {available}"
+            f"Available providers: {get_registered_providers()}"
         )
 
     # Resolve api_key from settings if not provided
@@ -88,7 +89,7 @@ def create_provider(
 
     if not api_key:
         raise TranslationError(
-            message=f"API key not provided and not found in settings for provider '{provider_name}'",
+            message=f"API key not provided for provider '{provider_name}'",
             provider=provider_name,
             retryable=False,
         )
@@ -102,28 +103,25 @@ def create_provider(
         elif provider_name == "openai":
             model = settings.OPENAI_TRANSLATION_MODEL
 
-    provider_class = _PROVIDER_REGISTRY[provider_name]
+    # Build kwargs for provider-specific config
+    provider_kwargs: dict = {"api_key": api_key, "model": model}
 
-    # Build kwargs with provider-specific settings
+    # Add provider-specific settings
+    from app.core.config import settings
+
     if provider_name == "grok":
-        from app.core.config import settings
-
-        kwargs.setdefault("base_url", settings.GROK_BASE_URL)
-        kwargs.setdefault("timeout", settings.GROK_TIMEOUT_SECONDS)
-        kwargs.setdefault("max_retries", settings.GROK_MAX_RETRIES)
+        provider_kwargs["base_url"] = settings.GROK_BASE_URL
+        provider_kwargs["timeout"] = settings.GROK_TIMEOUT_SECONDS
+        provider_kwargs["max_retries"] = settings.GROK_MAX_RETRIES
     elif provider_name == "openai":
-        from app.core.config import settings
+        provider_kwargs["timeout"] = settings.OPENAI_TIMEOUT_SECONDS
+        provider_kwargs["max_retries"] = settings.OPENAI_MAX_RETRIES
 
-        kwargs.setdefault("timeout", settings.OPENAI_TIMEOUT_SECONDS)
-        kwargs.setdefault("max_retries", settings.OPENAI_MAX_RETRIES)
+    # Override with any explicitly passed kwargs
+    provider_kwargs.update(kwargs)
 
-    logger.info(
-        "Creating translation provider: %s (model: %s)",
-        provider_name,
-        model,
-    )
-
-    return provider_class(api_key=api_key, model=model, **kwargs)
+    # Instantiate and return the provider
+    return provider_class(**provider_kwargs)
 
 
 def create_fallback_provider(
@@ -148,27 +146,17 @@ def create_fallback_provider(
         "grok": "openai",
         "openai": "grok",
     }
-
     fallback_name = fallback_map.get(primary_name)
 
+    # If fallback is same as primary or unknown, return None
     if fallback_name is None or fallback_name == primary_name:
-        logger.warning(
-            "No fallback provider available for primary: %s",
-            primary_name,
-        )
         return None
 
-    if fallback_name not in _PROVIDER_REGISTRY:
-        logger.warning(
-            "Fallback provider '%s' is not registered, cannot create fallback",
-            fallback_name,
-        )
-        return None
-
+    # Create and return fallback provider using create_provider()
     try:
         return create_provider(fallback_name, **kwargs)
-    except (ValueError, TranslationError) as exc:
-        logger.warning("Failed to create fallback provider '%s': %s", fallback_name, exc)
+    except (ValueError, TranslationError) as e:
+        logger.warning("Failed to create fallback provider '%s': %s", fallback_name, e)
         return None
 
 
@@ -180,19 +168,21 @@ def _auto_register() -> None:
     Called at module import time to populate the registry with
     GrokTranslationProvider and OpenAITranslationProvider.
     """
+    # Import GrokTranslationProvider and register as 'grok'
     try:
         from app.etl.translation.providers.grok import GrokTranslationProvider
 
         register_provider("grok", GrokTranslationProvider)
-    except ImportError as exc:
-        logger.warning("Failed to register GrokTranslationProvider: %s", exc)
+    except ImportError as e:
+        logger.warning("Failed to register GrokTranslationProvider: %s", e)
 
+    # Import OpenAITranslationProvider and register as 'openai'
     try:
         from app.etl.translation.providers.openai import OpenAITranslationProvider
 
         register_provider("openai", OpenAITranslationProvider)
-    except ImportError as exc:
-        logger.warning("Failed to register OpenAITranslationProvider: %s", exc)
+    except ImportError as e:
+        logger.warning("Failed to register OpenAITranslationProvider: %s", e)
 
 
 _auto_register()

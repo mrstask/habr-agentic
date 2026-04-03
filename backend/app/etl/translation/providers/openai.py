@@ -14,25 +14,19 @@ Usage::
     result = await provider.translate(TranslationRequest(source_text="..."))
 """
 
-import logging
 import time
 from typing import Optional
 
 from openai import AsyncOpenAI
+from openai.types.chat import ChatCompletion
 
 from app.etl.translation.base import (
     BaseTranslationProvider,
-    TranslationError,
     TranslationRequest,
     TranslationResult,
     ProofreadingResult,
+    TranslationError,
 )
-from app.etl.translation.prompts.loader import (
-    load_translation_prompt,
-    load_proofreading_prompt,
-)
-
-logger = logging.getLogger(__name__)
 
 
 class OpenAITranslationProvider(BaseTranslationProvider):
@@ -68,6 +62,35 @@ class OpenAITranslationProvider(BaseTranslationProvider):
         super().__init__(api_key=api_key, model=model)
         self.timeout: int = timeout
         self.max_retries: int = max_retries
+        self._client: Optional[AsyncOpenAI] = None
+
+    def _get_client(self) -> AsyncOpenAI:
+        """Get or create the async OpenAI client."""
+        if self._client is None:
+            self._client = AsyncOpenAI(
+                api_key=self.api_key,
+                timeout=self.timeout,
+                max_retries=self.max_retries,
+            )
+        return self._client
+
+    @staticmethod
+    def _estimate_corrections(original: str, corrected: str) -> int:
+        """
+        Estimate the number of corrections between original and corrected text.
+
+        Uses symmetric difference of word sets to estimate changes.
+
+        Args:
+            original: The original text.
+            corrected: The corrected text.
+
+        Returns:
+            Estimated number of corrections (size of symmetric difference).
+        """
+        original_words = set(original.split())
+        corrected_words = set(corrected.split())
+        return len(original_words.symmetric_difference(corrected_words))
 
     async def translate(self, request: TranslationRequest) -> TranslationResult:
         """
@@ -85,23 +108,23 @@ class OpenAITranslationProvider(BaseTranslationProvider):
         Raises:
             TranslationError: If the translation fails after all retries.
         """
-        system_prompt = request.system_prompt or self._build_system_prompt(
-            source_language=request.source_language,
-            target_language=request.target_language,
-            context=request.context,
-        )
+        start_time = time.time()
+        last_error = None
 
-        last_error: Optional[Exception] = None
-
-        for attempt in range(1, self.max_retries + 1):
-            start_time = time.monotonic()
+        for attempt in range(self.max_retries):
             try:
-                client = AsyncOpenAI(
-                    api_key=self.api_key,
-                    timeout=self.timeout,
+                # Build system prompt
+                system_prompt = request.system_prompt or self._build_system_prompt(
+                    source_language=request.source_language,
+                    target_language=request.target_language,
+                    context=request.context,
                 )
 
-                response = await client.chat.completions.create(
+                # Create OpenAI async client
+                client = self._get_client()
+
+                # Call chat.completions.create() with system + user messages
+                response: ChatCompletion = await client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -109,9 +132,11 @@ class OpenAITranslationProvider(BaseTranslationProvider):
                     ],
                 )
 
-                latency_ms = (time.monotonic() - start_time) * 1000
+                # Extract translated text from response
                 translated_text = response.choices[0].message.content or ""
 
+                # Capture token usage and latency
+                latency_ms = (time.time() - start_time) * 1000
                 token_usage = None
                 if response.usage:
                     token_usage = {
@@ -128,20 +153,16 @@ class OpenAITranslationProvider(BaseTranslationProvider):
                     latency_ms=latency_ms,
                 )
 
-            except Exception as exc:
-                last_error = exc
-                latency_ms = (time.monotonic() - start_time) * 1000
-                logger.warning(
-                    "OpenAI translation attempt %d/%d failed: %s",
-                    attempt,
-                    self.max_retries,
-                    exc,
-                )
-                if attempt < self.max_retries:
-                    continue
+            except Exception as e:
+                last_error = e
+                if attempt >= self.max_retries - 1:
+                    break
+                if not self._is_retryable_error(e):
+                    break
 
+        latency_ms = (time.time() - start_time) * 1000
         raise TranslationError(
-            message=f"Translation failed after {self.max_retries} attempts: {last_error}",
+            message=f"Translation failed after {self.max_retries} attempts: {str(last_error)}",
             provider=self.name,
             retryable=True,
         )
@@ -163,19 +184,19 @@ class OpenAITranslationProvider(BaseTranslationProvider):
         Raises:
             TranslationError: If proofreading fails after all retries.
         """
-        system_prompt = self._build_proofreading_prompt(context=context)
+        start_time = time.time()
+        last_error = None
 
-        last_error: Optional[Exception] = None
-
-        for attempt in range(1, self.max_retries + 1):
-            start_time = time.monotonic()
+        for attempt in range(self.max_retries):
             try:
-                client = AsyncOpenAI(
-                    api_key=self.api_key,
-                    timeout=self.timeout,
-                )
+                # Build proofreading prompt
+                system_prompt = self._build_proofreading_prompt(context=context)
 
-                response = await client.chat.completions.create(
+                # Create OpenAI async client
+                client = self._get_client()
+
+                # Call chat.completions.create() with proofreading instructions
+                response: ChatCompletion = await client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -183,12 +204,12 @@ class OpenAITranslationProvider(BaseTranslationProvider):
                     ],
                 )
 
-                latency_ms = (time.monotonic() - start_time) * 1000
+                # Extract corrected text and count of corrections
                 corrected_text = response.choices[0].message.content or ""
-
-                # Count corrections using symmetric difference of word sets
                 corrections_made = self._estimate_corrections(text, corrected_text)
 
+                # Capture token usage and latency
+                latency_ms = (time.time() - start_time) * 1000
                 token_usage = None
                 if response.usage:
                     token_usage = {
@@ -206,19 +227,16 @@ class OpenAITranslationProvider(BaseTranslationProvider):
                     latency_ms=latency_ms,
                 )
 
-            except Exception as exc:
-                last_error = exc
-                logger.warning(
-                    "OpenAI proofreading attempt %d/%d failed: %s",
-                    attempt,
-                    self.max_retries,
-                    exc,
-                )
-                if attempt < self.max_retries:
-                    continue
+            except Exception as e:
+                last_error = e
+                if attempt >= self.max_retries - 1:
+                    break
+                if not self._is_retryable_error(e):
+                    break
 
+        latency_ms = (time.time() - start_time) * 1000
         raise TranslationError(
-            message=f"Proofreading failed after {self.max_retries} attempts: {last_error}",
+            message=f"Proofreading failed after {self.max_retries} attempts: {str(last_error)}",
             provider=self.name,
             retryable=True,
         )
@@ -234,75 +252,37 @@ class OpenAITranslationProvider(BaseTranslationProvider):
             True if the API responds successfully, False otherwise.
         """
         try:
-            client = AsyncOpenAI(
-                api_key=self.api_key,
-                timeout=30,
-            )
-            response = await client.chat.completions.create(
+            client = self._get_client()
+            response: ChatCompletion = await client.chat.completions.create(
                 model=self.model,
-                messages=[{"role": "user", "content": "Say 'ok'"}],
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": "Say 'ok'"},
+                ],
                 max_tokens=10,
             )
-            return response is not None and len(response.choices) > 0
+            return response.choices[0].message.content is not None
         except Exception:
             return False
 
-    def _build_system_prompt(
-        self,
-        source_language: str,
-        target_language: str,
-        context: Optional[str] = None,
-    ) -> str:
+    def _is_retryable_error(self, error: Exception) -> bool:
         """
-        Build the system prompt for OpenAI translation.
-
-        Constructs a prompt that instructs the OpenAI model to translate
-        technical articles from Russian to Ukrainian.
+        Determine if an error is retryable.
 
         Args:
-            source_language: BCP-47 source language code.
-            target_language: BCP-47 target language code.
-            context: Optional article context (title, tags, hubs).
+            error: The exception that occurred.
 
         Returns:
-            Formatted system prompt string for OpenAI.
+            True if the error is transient and retryable.
         """
-        return load_translation_prompt(
-            source_language=source_language,
-            target_language=target_language,
-            context=context,
-        )
-
-    def _build_proofreading_prompt(self, context: Optional[str] = None) -> str:
-        """
-        Build the system prompt for OpenAI proofreading.
-
-        Constructs a prompt that instructs the OpenAI model to proofread
-        Ukrainian text for grammar, style, and fluency.
-
-        Args:
-            context: Optional article context.
-
-        Returns:
-            Formatted proofreading system prompt string.
-        """
-        return load_proofreading_prompt(context=context)
-
-    @staticmethod
-    def _estimate_corrections(original: str, corrected: str) -> int:
-        """
-        Estimate the number of corrections using symmetric difference of word sets.
-
-        Args:
-            original: The original text.
-            corrected: The corrected text.
-
-        Returns:
-            Size of the symmetric difference between word sets.
-        """
-        if original == corrected:
-            return 0
-
-        original_words = set(original.split())
-        corrected_words = set(corrected.split())
-        return len(original_words.symmetric_difference(corrected_words))
+        error_str = str(error).lower()
+        retryable_patterns = [
+            "timeout",
+            "connection",
+            "rate limit",
+            "too many requests",
+            "service unavailable",
+            "internal server error",
+            "gateway",
+        ]
+        return any(pattern in error_str for pattern in retryable_patterns)

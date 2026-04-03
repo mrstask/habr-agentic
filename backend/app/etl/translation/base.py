@@ -171,11 +171,12 @@ class BaseTranslationProvider(ABC):
         Returns:
             Formatted system prompt string.
         """
-        context_info = f"- Article context: {context}" if context else ""
-        return (
-            f"You are a professional translator specializing in technical articles.\n\n"
-            f"Translate the following text from {source_language} to {target_language}.\n\n"
-            f"{context_info}"
+        from app.etl.translation.prompts.loader import load_translation_prompt
+
+        return load_translation_prompt(
+            source_language=source_language,
+            target_language=target_language,
+            context=context,
         )
 
     def _build_proofreading_prompt(self, context: Optional[str] = None) -> str:
@@ -190,12 +191,9 @@ class BaseTranslationProvider(ABC):
         Returns:
             Formatted proofreading system prompt string.
         """
-        context_info = f"- Article context: {context}" if context else ""
-        return (
-            f"You are a professional editor specializing in technical articles.\n\n"
-            f"Proofread and correct the text.\n\n"
-            f"{context_info}"
-        )
+        from app.etl.translation.prompts.loader import load_proofreading_prompt
+
+        return load_proofreading_prompt(context=context)
 
 
 class TranslationError(Exception):
