@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes.pipeline import router as pipeline_router
+from app.dependencies import verify_pipeline_enabled
 from app.models.enums import RunStatus, PipelineStep
 from app.schemas import (
     PipelineRunResponse,
@@ -141,7 +142,7 @@ def test_get_pipeline_run_returns_404(client):
 # trigger_pipeline
 # ---------------------------------------------------------------------------
 
-def test_trigger_pipeline_returns_200(client):
+def test_trigger_pipeline_returns_200(app, client):
     """POST /pipeline/trigger/{article_id} returns 200 with trigger response."""
     mock_response = PipelineTriggerResponse(
         run_id=100,
@@ -153,9 +154,12 @@ def test_trigger_pipeline_returns_200(client):
     mock_service = MagicMock()
     mock_service.trigger_run = AsyncMock(return_value=mock_response)
 
+    app.dependency_overrides[verify_pipeline_enabled] = lambda: {"AGENT_ENABLED": "True"}
+
     with patch("app.api.routes.pipeline.PipelineService", return_value=mock_service):
-        with patch("app.api.routes.pipeline.verify_pipeline_enabled", return_value={"AGENT_ENABLED": "True"}):
-            response = client.post("/pipeline/trigger/42")
+        response = client.post("/pipeline/trigger/42")
+
+    app.dependency_overrides.clear()
 
     assert response.status_code == 200
     data = response.json()
@@ -163,7 +167,7 @@ def test_trigger_pipeline_returns_200(client):
     assert data["status"] == "running"
 
 
-def test_trigger_pipeline_returns_404(client):
+def test_trigger_pipeline_returns_404(app, client):
     """POST /pipeline/trigger/{article_id} returns 404 when article not found."""
     from fastapi import HTTPException, status
 
@@ -175,14 +179,17 @@ def test_trigger_pipeline_returns_404(client):
         )
     )
 
+    app.dependency_overrides[verify_pipeline_enabled] = lambda: {"AGENT_ENABLED": "True"}
+
     with patch("app.api.routes.pipeline.PipelineService", return_value=mock_service):
-        with patch("app.api.routes.pipeline.verify_pipeline_enabled", return_value={"AGENT_ENABLED": "True"}):
-            response = client.post("/pipeline/trigger/999")
+        response = client.post("/pipeline/trigger/999")
+
+    app.dependency_overrides.clear()
 
     assert response.status_code == 404
 
 
-def test_trigger_pipeline_returns_409_conflict(client):
+def test_trigger_pipeline_returns_409_conflict(app, client):
     """POST /pipeline/trigger/{article_id} returns 409 when already running."""
     from fastapi import HTTPException, status
 
@@ -194,9 +201,12 @@ def test_trigger_pipeline_returns_409_conflict(client):
         )
     )
 
+    app.dependency_overrides[verify_pipeline_enabled] = lambda: {"AGENT_ENABLED": "True"}
+
     with patch("app.api.routes.pipeline.PipelineService", return_value=mock_service):
-        with patch("app.api.routes.pipeline.verify_pipeline_enabled", return_value={"AGENT_ENABLED": "True"}):
-            response = client.post("/pipeline/trigger/42")
+        response = client.post("/pipeline/trigger/42")
+
+    app.dependency_overrides.clear()
 
     assert response.status_code == 409
 

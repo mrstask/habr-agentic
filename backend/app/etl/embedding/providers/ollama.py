@@ -105,16 +105,18 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
                     },
                 )
                 response.raise_for_status()
-                response_data = response.json()
+                data = response.json()
 
-                embedding = response_data["embedding"]
+                embedding = data["embedding"]
+                actual_dimensions = len(embedding)
+
                 latency_ms = (time.time() - start_time) * 1000
 
                 return EmbeddingResult(
                     embedding=embedding,
                     provider_name=self.name,
                     model_name=model,
-                    dimensions=len(embedding),
+                    dimensions=actual_dimensions,
                     latency_ms=latency_ms,
                 )
 
@@ -148,14 +150,12 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
         Raises:
             EmbeddingError: If the batch embedding fails after retries.
         """
-        # Ollama doesn't have a native batch API, so we call embed() for each text
         results = []
         for text in texts:
             try:
-                result = await self.embed(EmbeddingRequest(text=text, model=self.model))
+                result = await self.embed(EmbeddingRequest(text=text))
                 results.append(result)
             except EmbeddingError as e:
-                # Create a partial failure result
                 results.append(
                     EmbeddingResult(
                         embedding=[],
@@ -199,7 +199,9 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
             "timeout",
             "connection",
             "network",
-            "unavailable",
-            "server error",
+            "refused",
+            "service unavailable",
+            "internal server error",
+            "gateway",
         ]
         return any(pattern in error_str for pattern in retryable_patterns)

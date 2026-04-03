@@ -1,6 +1,4 @@
-import pytest
 from app.models.article import Article, Tag, Hub, Image
-from app.db.base import Base
 from app.models.enums import ArticleStatus
 
 

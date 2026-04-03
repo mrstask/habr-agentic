@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.pipeline_service import PipelineService
 from app.models.pipeline import PipelineRun
-from app.models.enums import RunStatus, ArticleStatus
+from app.models.enums import RunStatus
 from app.schemas import (
     PipelineRunResponse,
     PipelineRunListResponse,
@@ -142,7 +142,7 @@ async def test_list_runs_filters_by_status():
     service = PipelineService(mock_session)
     await service.list_runs(status_filter=RunStatus.completed, limit=10, offset=0)
 
-    assert mock_session.execute.call_count == 2
+    assert call_count == 2
 
 
 @pytest.mark.asyncio
@@ -169,7 +169,7 @@ async def test_list_runs_filters_by_article_id():
     service = PipelineService(mock_session)
     await service.list_runs(article_id=42, limit=10, offset=0)
 
-    assert mock_session.execute.call_count == 2
+    assert call_count == 2
 
 
 @pytest.mark.asyncio
@@ -309,20 +309,14 @@ async def test_trigger_run_creates_new_run():
 async def test_trigger_run_raises_404_article_not_found():
     """trigger_run raises 404 when article does not exist."""
     mock_session = AsyncMock(spec=AsyncSession)
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_session.execute = AsyncMock(return_value=mock_result)
 
-    with patch("app.db.session.ArticlesSessionLocal") as mock_articles_local:
-        mock_articles_session = AsyncMock()
-        mock_articles_session.__aenter__ = AsyncMock(return_value=mock_articles_session)
-        mock_articles_session.__aexit__ = AsyncMock(return_value=False)
-        mock_articles_session.execute = AsyncMock(
-            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=None))
-        )
-        mock_articles_local.return_value = mock_articles_session
+    service = PipelineService(mock_session)
 
-        service = PipelineService(mock_session)
-
-        with pytest.raises(HTTPException) as exc_info:
-            await service.trigger_run(999)
+    with pytest.raises(HTTPException) as exc_info:
+        await service.trigger_run(999)
 
     assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
     assert "not found" in exc_info.value.detail.lower()
@@ -455,14 +449,19 @@ async def test_get_pipeline_status_returns_response():
         nonlocal call_count
         call_count += 1
         mock_result = MagicMock()
-        # Return different values for different queries
+        # Queries through self.session (app DB):
+        # 1: active runs count
+        # 2: completed today count
+        # 3: total finished count
+        # 4: success count
+        # 5: avg duration
         if call_count == 1:
             mock_result.scalar.return_value = 2  # active runs
-        elif call_count == 3:
+        elif call_count == 2:
             mock_result.scalar.return_value = 10  # completed today
-        elif call_count == 4:
+        elif call_count == 3:
             mock_result.scalar.return_value = 50  # total finished
-        elif call_count == 5:
+        elif call_count == 4:
             mock_result.scalar.return_value = 45  # success count
         else:
             mock_result.scalar.return_value = 60.0  # avg duration

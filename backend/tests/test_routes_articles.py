@@ -83,7 +83,7 @@ def test_list_articles_with_status_filter(client):
     mock_service.list_articles = AsyncMock(return_value=mock_response)
 
     with patch("app.api.routes.articles.ArticleService", return_value=mock_service):
-        response = client.get("/articles/?status=published")
+        response = client.get(f"/articles/?status={ArticleStatus.PUBLISHED.value}")
 
     assert response.status_code == 200
     mock_service.list_articles.assert_called_once()
@@ -192,7 +192,7 @@ def test_create_article_returns_201(client):
     assert response.status_code == 201
     data = response.json()
     assert data["title"] == "New Article"
-    assert data["status"] == "discovered"
+    assert data["status"] == ArticleStatus.DISCOVERED.value
 
 
 def test_create_article_validation_error(client):
@@ -280,11 +280,11 @@ def test_update_article_status_returns_200(client):
     mock_service.update_article_status = AsyncMock(return_value=mock_response)
 
     with patch("app.api.routes.articles.ArticleService", return_value=mock_service):
-        response = client.put("/articles/1/status?new_status=extracted")
+        response = client.put(f"/articles/1/status?new_status={ArticleStatus.EXTRACTED.value}")
 
     assert response.status_code == 200
     data = response.json()
-    assert data["status"] == "extracted"
+    assert data["status"] == ArticleStatus.EXTRACTED.value
 
 
 def test_update_article_status_returns_400_invalid_transition(client):
@@ -300,7 +300,7 @@ def test_update_article_status_returns_400_invalid_transition(client):
     )
 
     with patch("app.api.routes.articles.ArticleService", return_value=mock_service):
-        response = client.put("/articles/1/status?new_status=draft")
+        response = client.put(f"/articles/1/status?new_status={ArticleStatus.DRAFT.value}")
 
     assert response.status_code == 400
 

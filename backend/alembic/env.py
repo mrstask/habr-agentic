@@ -9,7 +9,6 @@ from alembic import context
 
 # Import models and bases
 from app.db.base import Base
-from app.db.session import APP_ENGINE, ARTICLES_ENGINE
 import app.models  # noqa: F401
 
 # this is the Alembic Config object, which provides

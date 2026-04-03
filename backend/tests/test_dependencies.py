@@ -5,7 +5,7 @@ Tests for app.dependencies — database session, authentication, and authorizati
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from fastapi import Depends, HTTPException, status
+from fastapi import HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 

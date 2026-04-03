@@ -36,7 +36,7 @@ def register_embedding_provider(
         provider_class: The provider class to register.
     """
     _EMBEDDING_PROVIDER_REGISTRY[name] = provider_class
-    logger.debug("Registered embedding provider: %s -> %s", name, provider_class.__name__)
+    logger.info("Registered embedding provider: %s", name)
 
 
 def get_registered_embedding_providers() -> list[str]:
@@ -74,23 +74,22 @@ def create_embedding_provider(
         ValueError: If the provider name is not registered.
         EmbeddingError: If required configuration is missing.
     """
-    # Look up provider_name in _EMBEDDING_PROVIDER_REGISTRY
+    # Look up provider_name in registry
     provider_class = _EMBEDDING_PROVIDER_REGISTRY.get(provider_name)
     if provider_class is None:
         raise ValueError(
             f"Unknown embedding provider: '{provider_name}'. "
-            f"Available providers: {get_registered_embedding_providers()}"
+            f"Available: {list(_EMBEDDING_PROVIDER_REGISTRY.keys())}"
         )
 
     # Resolve api_key from settings if not provided
-    if api_key is None:
-        if provider_name == "openai":
-            api_key = settings.OPENAI_API_KEY
+    if api_key is None and provider_name == "openai":
+        api_key = settings.OPENAI_API_KEY
 
     # Raise EmbeddingError if api_key is missing for cloud providers
     if provider_name == "openai" and not api_key:
         raise EmbeddingError(
-            message=f"API key not provided for provider '{provider_name}'",
+            message="OpenAI API key is required for the OpenAI embedding provider",
             provider=provider_name,
             retryable=False,
         )
@@ -102,28 +101,27 @@ def create_embedding_provider(
         elif provider_name == "ollama":
             model = settings.OLLAMA_EMBEDDING_MODEL
 
-    # Build kwargs for provider-specific config
-    provider_kwargs: dict = {"model": model}
-
-    # Always pass api_key if available (works for any provider)
-    if api_key is not None:
-        provider_kwargs["api_key"] = api_key
-
-    # Add provider-specific settings
+    # Build kwargs with provider-specific settings
     if provider_name == "openai":
-        provider_kwargs["timeout"] = settings.OPENAI_TIMEOUT_SECONDS
-        provider_kwargs["max_retries"] = settings.OPENAI_MAX_RETRIES
-        provider_kwargs["dimensions"] = settings.EMBEDDING_DIMENSIONS
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = settings.OPENAI_TIMEOUT_SECONDS
+        if "max_retries" not in kwargs:
+            kwargs["max_retries"] = settings.OPENAI_MAX_RETRIES
+        if "dimensions" not in kwargs:
+            kwargs["dimensions"] = settings.EMBEDDING_DIMENSIONS
     elif provider_name == "ollama":
-        provider_kwargs["base_url"] = settings.OLLAMA_BASE_URL
-        provider_kwargs["timeout"] = settings.OLLAMA_TIMEOUT_SECONDS
-        provider_kwargs["max_retries"] = 3
-
-    # Override with any explicitly passed kwargs
-    provider_kwargs.update(kwargs)
+        if "base_url" not in kwargs:
+            kwargs["base_url"] = settings.OLLAMA_BASE_URL
+        if "timeout" not in kwargs:
+            kwargs["timeout"] = settings.OLLAMA_TIMEOUT_SECONDS
+        if "max_retries" not in kwargs:
+            kwargs["max_retries"] = 3
 
     # Instantiate and return the provider
-    return provider_class(**provider_kwargs)
+    if provider_name == "openai":
+        return provider_class(api_key=api_key, model=model, **kwargs)
+    else:
+        return provider_class(model=model, **kwargs)
 
 
 # Auto-register providers on module import
@@ -134,21 +132,19 @@ def _auto_register() -> None:
     Called at module import time to populate the registry with
     OpenAIEmbeddingProvider and OllamaEmbeddingProvider.
     """
-    # Import OpenAIEmbeddingProvider and register as 'openai'
     try:
         from app.etl.embedding.providers.openai import OpenAIEmbeddingProvider
 
         register_embedding_provider("openai", OpenAIEmbeddingProvider)
-    except ImportError as e:
-        logger.warning("Failed to register OpenAIEmbeddingProvider: %s", e)
+    except ImportError:
+        logger.warning("OpenAIEmbeddingProvider not available, skipping registration")
 
-    # Import OllamaEmbeddingProvider and register as 'ollama'
     try:
         from app.etl.embedding.providers.ollama import OllamaEmbeddingProvider
 
         register_embedding_provider("ollama", OllamaEmbeddingProvider)
-    except ImportError as e:
-        logger.warning("Failed to register OllamaEmbeddingProvider: %s", e)
+    except ImportError:
+        logger.warning("OllamaEmbeddingProvider not available, skipping registration")
 
 
 _auto_register()

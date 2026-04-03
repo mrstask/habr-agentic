@@ -4,20 +4,19 @@ Tests for app.services.article_service — ArticleService business logic.
 
 import pytest
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.services.article_service import ArticleService, VALID_STATUS_TRANSITIONS
-from app.models.article import Article, Tag, Hub, Image
+from app.models.article import Article
 from app.models.enums import ArticleStatus
 from app.schemas import (
     ArticleCreate,
     ArticleUpdate,
     ArticleResponse,
     ArticleListResponse,
-    PaginationMeta,
 )
 
 
@@ -208,7 +207,7 @@ async def test_list_articles_filters_by_status():
     await service.list_articles(status_filter=ArticleStatus.PUBLISHED, limit=10, offset=0)
 
     # Verify the query was built with the filter — check execute was called twice
-    assert mock_session.execute.call_count == 2
+    assert call_count == 2
 
 
 @pytest.mark.asyncio
@@ -489,7 +488,6 @@ async def test_update_article_status_raises_404_not_found():
 @pytest.mark.asyncio
 async def test_delete_article_succeeds():
     """delete_article deletes the article and its relationships."""
-    now = datetime.now(timezone.utc)
     article = MagicMock(spec=Article)
     article.id = 1
     article.tags = []
@@ -512,9 +510,11 @@ async def test_delete_article_clears_relationships():
     """delete_article clears tags, hubs, and deletes images."""
     article = MagicMock(spec=Article)
     article.id = 1
-    article.tags = [MagicMock()]
-    article.hubs = [MagicMock()]
+    mock_tags = MagicMock()
+    mock_hubs = MagicMock()
     image = MagicMock()
+    article.tags = mock_tags
+    article.hubs = mock_hubs
     article.images = [image]
 
     mock_session = AsyncMock(spec=AsyncSession)
@@ -525,8 +525,8 @@ async def test_delete_article_clears_relationships():
     service = ArticleService(mock_session)
     await service.delete_article(1)
 
-    article.tags.clear.assert_called_once()
-    article.hubs.clear.assert_called_once()
+    mock_tags.clear.assert_called_once()
+    mock_hubs.clear.assert_called_once()
     mock_session.delete.assert_any_call(image)
 
 

@@ -18,6 +18,7 @@ import time
 from typing import Optional
 
 from openai import AsyncOpenAI
+from openai.types.images_response import ImagesResponse
 
 from app.etl.image_generation.base import (
     BaseImageGenerationProvider,
@@ -96,7 +97,7 @@ class OpenAIImageGenerationProvider(BaseImageGenerationProvider):
             try:
                 client = self._get_client()
 
-                response = await client.images.generate(
+                response: ImagesResponse = await client.images.generate(
                     model=model,
                     prompt=request.prompt,
                     size=request.size,
@@ -105,15 +106,12 @@ class OpenAIImageGenerationProvider(BaseImageGenerationProvider):
                     n=request.n,
                 )
 
-                latency_ms = (time.time() - start_time) * 1000
-
-                # Extract image URL or b64_json from response.data[0]
                 image_data = response.data[0]
                 image_url = getattr(image_data, "url", None)
                 image_b64 = getattr(image_data, "b64_json", None)
-
-                # Capture revised_prompt from response if available
                 revised_prompt = getattr(image_data, "revised_prompt", None)
+
+                latency_ms = (time.time() - start_time) * 1000
 
                 return ImageGenerationResult(
                     image_url=image_url,
@@ -149,13 +147,13 @@ class OpenAIImageGenerationProvider(BaseImageGenerationProvider):
         """
         try:
             client = self._get_client()
-            response = await client.images.generate(
+            response: ImagesResponse = await client.images.generate(
                 model=self.model,
-                prompt="a simple test",
+                prompt="test",
                 size="1024x1024",
                 n=1,
             )
-            return response.data is not None and len(response.data) > 0
+            return len(response.data) > 0
         except Exception:
             return False
 

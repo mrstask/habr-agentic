@@ -83,10 +83,8 @@ async def test_authenticate_returns_login_response():
     service = AdminService(mock_session)
     login_data = AdminLoginRequest(username="admin", password="correct")
 
-    with patch("passlib.context.CryptContext") as mock_ctx_cls:
-        mock_ctx = MagicMock()
+    with patch("app.services.admin_service.pwd_context") as mock_ctx:
         mock_ctx.verify.return_value = True
-        mock_ctx_cls.return_value = mock_ctx
 
         result = await service.authenticate(login_data)
 
@@ -130,10 +128,8 @@ async def test_authenticate_raises_401_wrong_password():
     service = AdminService(mock_session)
     login_data = AdminLoginRequest(username="admin", password="wrong")
 
-    with patch("passlib.context.CryptContext") as mock_ctx_cls:
-        mock_ctx = MagicMock()
+    with patch("app.services.admin_service.pwd_context") as mock_ctx:
         mock_ctx.verify.return_value = False
-        mock_ctx_cls.return_value = mock_ctx
 
         with pytest.raises(HTTPException) as exc_info:
             await service.authenticate(login_data)
@@ -231,10 +227,8 @@ async def test_create_user_returns_user_response():
     service = AdminService(mock_session)
     user_data = AdminUserCreate(username="newadmin", password="securepass123")
 
-    with patch("passlib.context.CryptContext") as mock_ctx_cls:
-        mock_ctx = MagicMock()
+    with patch("app.services.admin_service.pwd_context") as mock_ctx:
         mock_ctx.hash.return_value = "$2b$12$hashed"
-        mock_ctx_cls.return_value = mock_ctx
 
         result = await service.create_user(user_data)
 
@@ -306,12 +300,10 @@ async def test_update_user_updates_password():
     service = AdminService(mock_session)
     update_data = AdminUserUpdate(password="newpassword123")
 
-    with patch("passlib.context.CryptContext") as mock_ctx_cls:
-        mock_ctx = MagicMock()
+    with patch("app.services.admin_service.pwd_context") as mock_ctx:
         mock_ctx.hash.return_value = "$2b$12$newhash"
-        mock_ctx_cls.return_value = mock_ctx
 
-        result = await service.update_user(1, update_data)
+        await service.update_user(1, update_data)
 
     assert mock_user.hashed_password == "$2b$12$newhash"
 

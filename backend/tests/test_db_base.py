@@ -1,6 +1,5 @@
 """Tests for backend/app/db/base.py — centralized declarative base."""
 
-import pytest
 from sqlalchemy.orm import DeclarativeMeta
 
 from app.db.base import Base, AppBase, ArticleBase

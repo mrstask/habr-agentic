@@ -9,7 +9,7 @@ All endpoints use the SettingsService for business logic and the
 centralized database session dependency from app.dependencies.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_app_session

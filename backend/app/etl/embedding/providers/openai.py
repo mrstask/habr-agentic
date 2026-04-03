@@ -17,6 +17,7 @@ import time
 from typing import Optional
 
 from openai import AsyncOpenAI
+from openai.types import CreateEmbeddingResponse
 
 from app.etl.embedding.base import (
     BaseEmbeddingProvider,
@@ -108,10 +109,10 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
                 if dimensions is not None:
                     params["dimensions"] = dimensions
 
-                response = await client.embeddings.create(**params)
+                response: CreateEmbeddingResponse = await client.embeddings.create(**params)
 
                 embedding = response.data[0].embedding
-                latency_ms = (time.time() - start_time) * 1000
+                actual_dimensions = len(embedding)
 
                 token_usage = None
                 if response.usage:
@@ -120,11 +121,13 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
                         "total": response.usage.total_tokens,
                     }
 
+                latency_ms = (time.time() - start_time) * 1000
+
                 return EmbeddingResult(
                     embedding=embedding,
                     provider_name=self.name,
                     model_name=model,
-                    dimensions=len(embedding),
+                    dimensions=actual_dimensions,
                     token_usage=token_usage,
                     latency_ms=latency_ms,
                 )
@@ -136,7 +139,6 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
                 if not self._is_retryable_error(e):
                     break
 
-        latency_ms = (time.time() - start_time) * 1000
         raise EmbeddingError(
             message=f"Embedding failed after {self.max_retries} attempts: {str(last_error)}",
             provider=self.name,
@@ -176,30 +178,28 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
                 if dimensions is not None:
                     params["dimensions"] = dimensions
 
-                response = await client.embeddings.create(**params)
-
-                latency_ms = (time.time() - start_time) * 1000
-
-                token_usage = None
-                if response.usage:
-                    token_usage = {
-                        "input": response.usage.prompt_tokens,
-                        "total": response.usage.total_tokens,
-                    }
+                response: CreateEmbeddingResponse = await client.embeddings.create(**params)
 
                 results = []
-                for i, data in enumerate(response.data):
-                    embedding = data.embedding
+                for i, item in enumerate(response.data):
+                    embedding = item.embedding
+                    actual_dimensions = len(embedding)
                     results.append(
                         EmbeddingResult(
                             embedding=embedding,
                             provider_name=self.name,
                             model_name=model,
-                            dimensions=len(embedding),
-                            token_usage=token_usage,
-                            latency_ms=latency_ms,
+                            dimensions=actual_dimensions,
+                            latency_ms=(time.time() - start_time) * 1000,
                         )
                     )
+
+                # Attach token usage to the first result if available
+                if response.usage and results:
+                    results[0].token_usage = {
+                        "input": response.usage.prompt_tokens,
+                        "total": response.usage.total_tokens,
+                    }
 
                 return results
 
@@ -210,7 +210,6 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
                 if not self._is_retryable_error(e):
                     break
 
-        latency_ms = (time.time() - start_time) * 1000
         raise EmbeddingError(
             message=f"Batch embedding failed after {self.max_retries} attempts: {str(last_error)}",
             provider=self.name,
@@ -228,11 +227,11 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
         """
         try:
             client = self._get_client()
-            response = await client.embeddings.create(
+            response: CreateEmbeddingResponse = await client.embeddings.create(
                 model=self.model,
                 input="test",
             )
-            return response.data is not None and len(response.data) > 0
+            return len(response.data) > 0
         except Exception:
             return False
 

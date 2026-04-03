@@ -8,9 +8,8 @@ All endpoints use the AdminService for business logic and the
 centralized database session dependency from app.dependencies.
 """
 
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import get_app_session, verify_admin_token, require_active_admin

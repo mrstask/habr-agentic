@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes.admin import router as admin_router
+from app.dependencies import verify_admin_token, require_active_admin
 from app.schemas import (
     AdminLoginResponse,
     AdminUserResponse,
@@ -89,7 +90,7 @@ def test_admin_login_validation_error(client):
 # get_current_admin
 # ---------------------------------------------------------------------------
 
-def test_get_current_admin_returns_200(client):
+def test_get_current_admin_returns_200(app, client):
     """GET /admin/me returns 200 with current admin user info."""
     now = datetime.now(timezone.utc).isoformat()
 
@@ -102,8 +103,11 @@ def test_get_current_admin_returns_200(client):
         "updated_at": now,
     }
 
-    with patch("app.api.routes.admin.verify_admin_token", return_value=mock_admin):
-        response = client.get("/admin/me")
+    app.dependency_overrides[verify_admin_token] = lambda: mock_admin
+
+    response = client.get("/admin/me")
+
+    app.dependency_overrides.clear()
 
     assert response.status_code == 200
     data = response.json()
@@ -116,7 +120,7 @@ def test_get_current_admin_returns_200(client):
 # create_admin_user
 # ---------------------------------------------------------------------------
 
-def test_create_admin_user_returns_201(client):
+def test_create_admin_user_returns_201(app, client):
     """POST /admin/users returns 201 with created user."""
     now = datetime.now(timezone.utc).isoformat()
 
@@ -134,12 +138,15 @@ def test_create_admin_user_returns_201(client):
 
     mock_admin = {"id": 1, "username": "admin", "is_active": True}
 
+    app.dependency_overrides[require_active_admin] = lambda: mock_admin
+
     with patch("app.api.routes.admin.AdminService", return_value=mock_service):
-        with patch("app.api.routes.admin.require_active_admin", return_value=mock_admin):
-            response = client.post(
-                "/admin/users",
-                json={"username": "newadmin", "password": "securepass123"},
-            )
+        response = client.post(
+            "/admin/users",
+            json={"username": "newadmin", "password": "securepass123"},
+        )
+
+    app.dependency_overrides.clear()
 
     assert response.status_code == 201
     data = response.json()
@@ -147,7 +154,7 @@ def test_create_admin_user_returns_201(client):
     assert data["is_active"] is True
 
 
-def test_create_admin_user_returns_409_duplicate(client):
+def test_create_admin_user_returns_409_duplicate(app, client):
     """POST /admin/users returns 409 when username already exists."""
     from fastapi import HTTPException, status
 
@@ -161,25 +168,31 @@ def test_create_admin_user_returns_409_duplicate(client):
 
     mock_admin = {"id": 1, "username": "admin", "is_active": True}
 
+    app.dependency_overrides[require_active_admin] = lambda: mock_admin
+
     with patch("app.api.routes.admin.AdminService", return_value=mock_service):
-        with patch("app.api.routes.admin.require_active_admin", return_value=mock_admin):
-            response = client.post(
-                "/admin/users",
-                json={"username": "existing", "password": "securepass123"},
-            )
+        response = client.post(
+            "/admin/users",
+            json={"username": "existing", "password": "securepass123"},
+        )
+
+    app.dependency_overrides.clear()
 
     assert response.status_code == 409
 
 
-def test_create_admin_user_validation_error(client):
+def test_create_admin_user_validation_error(app, client):
     """POST /admin/users returns 422 when password is too short."""
     mock_admin = {"id": 1, "username": "admin", "is_active": True}
 
-    with patch("app.api.routes.admin.require_active_admin", return_value=mock_admin):
-        response = client.post(
-            "/admin/users",
-            json={"username": "ab", "password": "short"},
-        )
+    app.dependency_overrides[require_active_admin] = lambda: mock_admin
+
+    response = client.post(
+        "/admin/users",
+        json={"username": "ab", "password": "short"},
+    )
+
+    app.dependency_overrides.clear()
 
     assert response.status_code == 422
 
@@ -188,7 +201,7 @@ def test_create_admin_user_validation_error(client):
 # update_admin_user
 # ---------------------------------------------------------------------------
 
-def test_update_admin_user_returns_200(client):
+def test_update_admin_user_returns_200(app, client):
     """PUT /admin/users/{id} returns 200 with updated user."""
     now = datetime.now(timezone.utc).isoformat()
 
@@ -206,19 +219,22 @@ def test_update_admin_user_returns_200(client):
 
     mock_admin = {"id": 1, "username": "admin", "is_active": True}
 
+    app.dependency_overrides[require_active_admin] = lambda: mock_admin
+
     with patch("app.api.routes.admin.AdminService", return_value=mock_service):
-        with patch("app.api.routes.admin.require_active_admin", return_value=mock_admin):
-            response = client.put(
-                "/admin/users/2",
-                json={"is_active": False},
-            )
+        response = client.put(
+            "/admin/users/2",
+            json={"is_active": False},
+        )
+
+    app.dependency_overrides.clear()
 
     assert response.status_code == 200
     data = response.json()
     assert data["is_active"] is False
 
 
-def test_update_admin_user_returns_404(client):
+def test_update_admin_user_returns_404(app, client):
     """PUT /admin/users/{id} returns 404 when user not found."""
     from fastapi import HTTPException, status
 
@@ -232,12 +248,15 @@ def test_update_admin_user_returns_404(client):
 
     mock_admin = {"id": 1, "username": "admin", "is_active": True}
 
+    app.dependency_overrides[require_active_admin] = lambda: mock_admin
+
     with patch("app.api.routes.admin.AdminService", return_value=mock_service):
-        with patch("app.api.routes.admin.require_active_admin", return_value=mock_admin):
-            response = client.put(
-                "/admin/users/999",
-                json={"is_active": True},
-            )
+        response = client.put(
+            "/admin/users/999",
+            json={"is_active": True},
+        )
+
+    app.dependency_overrides.clear()
 
     assert response.status_code == 404
 
@@ -246,21 +265,24 @@ def test_update_admin_user_returns_404(client):
 # delete_admin_user
 # ---------------------------------------------------------------------------
 
-def test_delete_admin_user_returns_204(client):
+def test_delete_admin_user_returns_204(app, client):
     """DELETE /admin/users/{id} returns 204 on success."""
     mock_service = MagicMock()
     mock_service.delete_user = AsyncMock(return_value=None)
 
     mock_admin = {"id": 1, "username": "admin", "is_active": True}
 
+    app.dependency_overrides[require_active_admin] = lambda: mock_admin
+
     with patch("app.api.routes.admin.AdminService", return_value=mock_service):
-        with patch("app.api.routes.admin.require_active_admin", return_value=mock_admin):
-            response = client.delete("/admin/users/2")
+        response = client.delete("/admin/users/2")
+
+    app.dependency_overrides.clear()
 
     assert response.status_code == 204
 
 
-def test_delete_admin_user_returns_404(client):
+def test_delete_admin_user_returns_404(app, client):
     """DELETE /admin/users/{id} returns 404 when user not found."""
     from fastapi import HTTPException, status
 
@@ -274,14 +296,17 @@ def test_delete_admin_user_returns_404(client):
 
     mock_admin = {"id": 1, "username": "admin", "is_active": True}
 
+    app.dependency_overrides[require_active_admin] = lambda: mock_admin
+
     with patch("app.api.routes.admin.AdminService", return_value=mock_service):
-        with patch("app.api.routes.admin.require_active_admin", return_value=mock_admin):
-            response = client.delete("/admin/users/999")
+        response = client.delete("/admin/users/999")
+
+    app.dependency_overrides.clear()
 
     assert response.status_code == 404
 
 
-def test_delete_admin_user_returns_400_last_admin(client):
+def test_delete_admin_user_returns_400_last_admin(app, client):
     """DELETE /admin/users/{id} returns 400 when deleting the last admin."""
     from fastapi import HTTPException, status
 
@@ -295,8 +320,11 @@ def test_delete_admin_user_returns_400_last_admin(client):
 
     mock_admin = {"id": 1, "username": "admin", "is_active": True}
 
+    app.dependency_overrides[require_active_admin] = lambda: mock_admin
+
     with patch("app.api.routes.admin.AdminService", return_value=mock_service):
-        with patch("app.api.routes.admin.require_active_admin", return_value=mock_admin):
-            response = client.delete("/admin/users/1")
+        response = client.delete("/admin/users/1")
+
+    app.dependency_overrides.clear()
 
     assert response.status_code == 400

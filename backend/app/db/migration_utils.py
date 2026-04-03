@@ -20,7 +20,7 @@ ALEMBIC_INI_PATH: Path = Path(__file__).resolve().parents[2] / "alembic.ini"
 ALEMBIC_SCRIPT_PATH: Path = Path(__file__).resolve().parents[2] / "alembic"
 
 
-def get_alembic_config(ini_path: Optional[Path] = None) -> "alembic.config.Config":
+def get_alembic_config(ini_path: Optional[Path] = None) -> "alembic.config.Config":  # noqa: F821
     """Build and return an ``alembic.config.Config`` instance.
 
     Args:
@@ -52,7 +52,6 @@ async def run_migrations_on_startup(
         articles_engine: The async engine connected to the Articles database.
     """
     from alembic import command
-    from alembic.runtime.migration import MigrationContext
 
     cfg = get_alembic_config()
 

@@ -11,7 +11,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
-from app.models.article import Article, Tag, Hub, Image
+from app.models.article import Article
 from app.models.enums import ArticleStatus
 from app.schemas import (
     ArticleCreate,

@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, Text, DateTime, Float
 from sqlalchemy.sql import func
 
 from app.db.base import Base
-from app.models.enums import PipelineStep, RunStatus
+from app.models.enums import RunStatus
 
 
 class PipelineRun(Base):

@@ -1,5 +1,4 @@
 from app.models.embedding import ArticleEmbedding
-from app.db.base import Base
 
 
 def test_article_embedding_table_creation():

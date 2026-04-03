@@ -6,7 +6,6 @@ environment variables) and managing agent configuration (persisted
 to the database).
 """
 
-from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
