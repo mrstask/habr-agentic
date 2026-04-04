@@ -88,13 +88,12 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
         Raises:
             EmbeddingError: If the embedding generation fails after all retries.
         """
-        start_time = time.time()
-        last_error = None
-
         model = request.model or self.model
+        last_error: Optional[Exception] = None
 
         for attempt in range(self.max_retries):
             try:
+                start_time = time.monotonic()
                 client = self._get_client()
 
                 response = await client.post(
@@ -105,31 +104,33 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
                     },
                 )
                 response.raise_for_status()
+
                 data = response.json()
-
                 embedding = data["embedding"]
-                actual_dimensions = len(embedding)
 
-                latency_ms = (time.time() - start_time) * 1000
+                latency_ms = (time.monotonic() - start_time) * 1000
 
                 return EmbeddingResult(
                     embedding=embedding,
                     provider_name=self.name,
                     model_name=model,
-                    dimensions=actual_dimensions,
+                    dimensions=len(embedding),
                     latency_ms=latency_ms,
                 )
 
-            except Exception as e:
-                last_error = e
-                if attempt >= self.max_retries - 1:
-                    break
-                if not self._is_retryable_error(e):
-                    break
+            except Exception as exc:
+                last_error = exc
+                if not self._is_retryable_error(exc):
+                    raise EmbeddingError(
+                        message=str(exc),
+                        provider=self.name,
+                        retryable=False,
+                    )
+                if attempt < self.max_retries - 1:
+                    await __import__("asyncio").sleep(2 ** attempt)
 
-        latency_ms = (time.time() - start_time) * 1000
         raise EmbeddingError(
-            message=f"Embedding failed after {self.max_retries} attempts: {str(last_error)}",
+            message=f"Embedding generation failed after {self.max_retries} retries: {last_error}",
             provider=self.name,
             retryable=True,
         )
@@ -150,21 +151,24 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
         Raises:
             EmbeddingError: If the batch embedding fails after retries.
         """
-        results = []
+        results: list[EmbeddingResult] = []
+
         for text in texts:
             try:
-                result = await self.embed(EmbeddingRequest(text=text))
+                result = await self.embed(EmbeddingRequest(text=text, model=self.model))
                 results.append(result)
-            except EmbeddingError as e:
+            except EmbeddingError as exc:
+                # Handle partial failures gracefully
                 results.append(
                     EmbeddingResult(
                         embedding=[],
                         provider_name=self.name,
                         model_name=self.model,
                         dimensions=0,
-                        error=str(e),
+                        error=str(exc),
                     )
                 )
+
         return results
 
     async def health_check(self) -> bool:
@@ -195,13 +199,5 @@ class OllamaEmbeddingProvider(BaseEmbeddingProvider):
             True if the error is transient and retryable.
         """
         error_str = str(error).lower()
-        retryable_patterns = [
-            "timeout",
-            "connection",
-            "network",
-            "refused",
-            "service unavailable",
-            "internal server error",
-            "gateway",
-        ]
-        return any(pattern in error_str for pattern in retryable_patterns)
+        retryable_keywords = ["timeout", "connection refused", "connection error", "network"]
+        return any(keyword in error_str for keyword in retryable_keywords)

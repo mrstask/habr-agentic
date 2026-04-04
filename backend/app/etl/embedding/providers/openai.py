@@ -17,7 +17,6 @@ import time
 from typing import Optional
 
 from openai import AsyncOpenAI
-from openai.types import CreateEmbeddingResponse
 
 from app.etl.embedding.base import (
     BaseEmbeddingProvider,
@@ -92,27 +91,25 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
         Raises:
             EmbeddingError: If the embedding generation fails after all retries.
         """
-        start_time = time.time()
-        last_error = None
-
         model = request.model or self.model
         dimensions = request.dimensions or self.dimensions
+        last_error: Optional[Exception] = None
 
         for attempt in range(self.max_retries):
             try:
+                start_time = time.monotonic()
                 client = self._get_client()
 
-                params: dict = {
-                    "model": model,
-                    "input": request.text,
-                }
-                if dimensions is not None:
-                    params["dimensions"] = dimensions
+                response = await client.embeddings.create(
+                    model=model,
+                    input=request.text,
+                    dimensions=dimensions,
+                )
 
-                response: CreateEmbeddingResponse = await client.embeddings.create(**params)
+                latency_ms = (time.monotonic() - start_time) * 1000
 
-                embedding = response.data[0].embedding
-                actual_dimensions = len(embedding)
+                embedding_data = response.data[0]
+                embedding = embedding_data.embedding
 
                 token_usage = None
                 if response.usage:
@@ -121,26 +118,28 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
                         "total": response.usage.total_tokens,
                     }
 
-                latency_ms = (time.time() - start_time) * 1000
-
                 return EmbeddingResult(
                     embedding=embedding,
                     provider_name=self.name,
                     model_name=model,
-                    dimensions=actual_dimensions,
+                    dimensions=len(embedding),
                     token_usage=token_usage,
                     latency_ms=latency_ms,
                 )
 
-            except Exception as e:
-                last_error = e
-                if attempt >= self.max_retries - 1:
-                    break
-                if not self._is_retryable_error(e):
-                    break
+            except Exception as exc:
+                last_error = exc
+                if not self._is_retryable_error(exc):
+                    raise EmbeddingError(
+                        message=str(exc),
+                        provider=self.name,
+                        retryable=False,
+                    )
+                if attempt < self.max_retries - 1:
+                    await __import__("asyncio").sleep(2 ** attempt)
 
         raise EmbeddingError(
-            message=f"Embedding failed after {self.max_retries} attempts: {str(last_error)}",
+            message=f"Embedding generation failed after {self.max_retries} retries: {last_error}",
             provider=self.name,
             retryable=True,
         )
@@ -161,57 +160,57 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
         Raises:
             EmbeddingError: If the batch embedding fails after retries.
         """
-        start_time = time.time()
-        last_error = None
-
-        model = self.model
-        dimensions = self.dimensions
+        last_error: Optional[Exception] = None
 
         for attempt in range(self.max_retries):
             try:
+                start_time = time.monotonic()
                 client = self._get_client()
 
-                params: dict = {
-                    "model": model,
-                    "input": texts,
-                }
-                if dimensions is not None:
-                    params["dimensions"] = dimensions
+                response = await client.embeddings.create(
+                    model=self.model,
+                    input=texts,
+                    dimensions=self.dimensions,
+                )
 
-                response: CreateEmbeddingResponse = await client.embeddings.create(**params)
+                latency_ms = (time.monotonic() - start_time) * 1000
 
-                results = []
-                for i, item in enumerate(response.data):
-                    embedding = item.embedding
-                    actual_dimensions = len(embedding)
-                    results.append(
-                        EmbeddingResult(
-                            embedding=embedding,
-                            provider_name=self.name,
-                            model_name=model,
-                            dimensions=actual_dimensions,
-                            latency_ms=(time.time() - start_time) * 1000,
-                        )
-                    )
-
-                # Attach token usage to the first result if available
-                if response.usage and results:
-                    results[0].token_usage = {
+                token_usage = None
+                if response.usage:
+                    token_usage = {
                         "input": response.usage.prompt_tokens,
                         "total": response.usage.total_tokens,
                     }
 
+                results = []
+                for embedding_data in response.data:
+                    embedding = embedding_data.embedding
+                    results.append(
+                        EmbeddingResult(
+                            embedding=embedding,
+                            provider_name=self.name,
+                            model_name=self.model,
+                            dimensions=len(embedding),
+                            token_usage=token_usage,
+                            latency_ms=latency_ms,
+                        )
+                    )
+
                 return results
 
-            except Exception as e:
-                last_error = e
-                if attempt >= self.max_retries - 1:
-                    break
-                if not self._is_retryable_error(e):
-                    break
+            except Exception as exc:
+                last_error = exc
+                if not self._is_retryable_error(exc):
+                    raise EmbeddingError(
+                        message=str(exc),
+                        provider=self.name,
+                        retryable=False,
+                    )
+                if attempt < self.max_retries - 1:
+                    await __import__("asyncio").sleep(2 ** attempt)
 
         raise EmbeddingError(
-            message=f"Batch embedding failed after {self.max_retries} attempts: {str(last_error)}",
+            message=f"Batch embedding failed after {self.max_retries} retries: {last_error}",
             provider=self.name,
             retryable=True,
         )
@@ -227,11 +226,11 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
         """
         try:
             client = self._get_client()
-            response: CreateEmbeddingResponse = await client.embeddings.create(
+            await client.embeddings.create(
                 model=self.model,
                 input="test",
             )
-            return len(response.data) > 0
+            return True
         except Exception:
             return False
 
@@ -246,13 +245,5 @@ class OpenAIEmbeddingProvider(BaseEmbeddingProvider):
             True if the error is transient and retryable.
         """
         error_str = str(error).lower()
-        retryable_patterns = [
-            "timeout",
-            "connection",
-            "rate limit",
-            "too many requests",
-            "service unavailable",
-            "internal server error",
-            "gateway",
-        ]
-        return any(pattern in error_str for pattern in retryable_patterns)
+        retryable_keywords = ["timeout", "rate limit", "connection refused", "connection error", "network"]
+        return any(keyword in error_str for keyword in retryable_keywords)

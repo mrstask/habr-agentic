@@ -16,12 +16,12 @@ Usage::
     ))
 """
 
-import re
 import time
 from typing import Optional
 from xml.etree import ElementTree
 
 import httpx
+from bs4 import BeautifulSoup
 
 from app.etl.extraction.base import (
     BaseExtractionProvider,
@@ -29,14 +29,6 @@ from app.etl.extraction.base import (
     ExtractionResult,
     ExtractionError,
 )
-
-# XML namespaces commonly used in RSS/Atom feeds
-NAMESPACES = {
-    "atom": "http://www.w3.org/2005/Atom",
-    "content": "http://purl.org/rss/1.0/modules/content/",
-    "dc": "http://purl.org/dc/elements/1.1/",
-    "media": "http://search.yahoo.com/mrss/",
-}
 
 
 class RssExtractionProvider(BaseExtractionProvider):
@@ -72,105 +64,99 @@ class RssExtractionProvider(BaseExtractionProvider):
         self.user_agent: str = user_agent
         self._client: Optional[httpx.AsyncClient] = None
 
-    async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create the async HTTP client."""
+    def _get_client(self) -> httpx.AsyncClient:
+        """
+        Get or create an async HTTP client.
+
+        Returns:
+            An httpx.AsyncClient instance configured with timeout and headers.
+        """
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
-                timeout=self.timeout,
+                timeout=httpx.Timeout(self.timeout),
                 headers={"User-Agent": self.user_agent},
                 follow_redirects=True,
             )
         return self._client
 
-    async def _fetch_feed(self, url: str) -> str:
-        """Fetch RSS/Atom feed content from a URL."""
-        client = await self._get_client()
-        response = await client.get(url)
-        response.raise_for_status()
-        return response.text
+    async def close(self) -> None:
+        """Close the underlying HTTP client if it exists."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
 
-    def _detect_feed_type(self, xml: str) -> str:
-        """Detect whether the feed is RSS or Atom."""
-        if "<feed" in xml and "xmlns" in xml:
-            return "atom"
-        return "rss"
+    def _detect_feed_type(self, xml_content: str) -> str:
+        """
+        Detect whether the XML content is RSS or Atom.
+
+        Args:
+            xml_content: Raw XML string.
+
+        Returns:
+            'rss' or 'atom' based on the feed type.
+        """
+        if "<rss" in xml_content or "<channel>" in xml_content:
+            return "rss"
+        return "atom"
 
     def _parse_rss_entry(self, item: ElementTree.Element) -> ExtractionResult:
-        """Parse a single RSS <item> element."""
-        def find_text(tag: str) -> Optional[str]:
-            el = item.find(tag)
-            if el is not None and el.text:
-                return el.text.strip()
-            return None
+        """
+        Parse an RSS item element into an ExtractionResult.
 
-        def find_text_ns(tag: str) -> Optional[str]:
-            """Search with common namespaces."""
-            for prefix, uri in NAMESPACES.items():
-                el = item.find(f"{{{uri}}}{tag}")
-                if el is not None and el.text:
-                    return el.text.strip()
-            return None
+        Args:
+            item: The RSS item element.
 
-        # Title
-        title = find_text("title") or ""
+        Returns:
+            ExtractionResult with extracted article data.
+        """
+        # Extract title
+        title_el = item.find("title")
+        title = title_el.text.strip() if title_el is not None and title_el.text else ""
 
-        # Content — try content:encoded first, then description
-        content = find_text_ns("encoded") or find_text("description") or ""
+        # Extract content
+        content = ""
+        encoded = item.find("{http://purl.org/rss/1.0/modules/content/}encoded")
+        if encoded is not None and encoded.text:
+            content = encoded.text.strip()
+        if not content:
+            description = item.find("description")
+            if description is not None and description.text:
+                content = description.text.strip()
 
-        # Excerpt — use description if content is encoded, or truncate content
+        # Extract excerpt from description
         excerpt = ""
-        if content:
-            # Strip HTML tags for excerpt
-            plain = ElementTree.fromstring(f"<root>{content}</root>").text if "<" in content else content
-            if plain and len(plain) > 300:
-                excerpt = plain[:300].rsplit(" ", 1)[0] + "..."
-            elif plain:
-                excerpt = plain
+        description = item.find("description")
+        if description is not None and description.text:
+            excerpt = description.text.strip()
 
-        # Author
-        author = find_text("author") or find_text_ns("creator")
+        # Extract author
+        author: Optional[str] = None
+        creator = item.find("{http://purl.org/dc/elements/1.1/}creator")
+        if creator is not None and creator.text:
+            author = creator.text.strip()
 
-        # Published date
-        published_at = find_text("pubDate") or find_text_ns("date")
+        # Extract published_at
+        published_at: Optional[str] = None
+        pub_date = item.find("pubDate")
+        if pub_date is not None and pub_date.text:
+            published_at = pub_date.text.strip()
 
-        # Categories → tags
+        # Extract tags/categories
         tags: list[str] = []
-        for cat in item.findall("category"):
-            if cat.text and cat.text.strip():
-                tags.append(cat.text.strip())
+        for category in item.findall("category"):
+            if category.text:
+                tags.append(category.text.strip())
 
-        # Hubs — not typically in RSS, leave empty
-        hubs: list[str] = []
-
-        # Image URLs — try media:content, media:thumbnail, enclosure
+        # Extract image URLs from media and enclosure
         image_urls: list[str] = []
-
-        # media:content
-        for media_el in item.findall(f"{{{NAMESPACES['media']}}}content"):
-            url = media_el.get("url")
-            if url and url not in image_urls:
-                image_urls.append(url)
-
-        # media:thumbnail
-        for media_el in item.findall(f"{{{NAMESPACES['media']}}}thumbnail"):
-            url = media_el.get("url")
-            if url and url not in image_urls:
-                image_urls.append(url)
-
-        # enclosure
+        # Media content
+        media_content = item.find("{http://search.yahoo.com/mrss/}content")
+        if media_content is not None and media_content.get("url"):
+            image_urls.append(media_content.get("url"))
+        # Enclosure
         enclosure = item.find("enclosure")
-        if enclosure is not None:
-            url = enclosure.get("url")
-            if url and url not in image_urls:
-                image_urls.append(url)
-
-        # Try to find img tags in content/description
-        if content and "<img" in content:
-            img_pattern = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']')
-            for match in img_pattern.finditer(content):
-                img_url = match.group(1)
-                if img_url not in image_urls:
-                    image_urls.append(img_url)
+        if enclosure is not None and enclosure.get("url"):
+            image_urls.append(enclosure.get("url"))
 
         return ExtractionResult(
             title=title,
@@ -179,82 +165,70 @@ class RssExtractionProvider(BaseExtractionProvider):
             author=author,
             published_at=published_at,
             tags=tags,
-            hubs=hubs,
+            hubs=[],
             image_urls=image_urls,
             provider_name=self.name,
         )
 
     def _parse_atom_entry(self, entry: ElementTree.Element) -> ExtractionResult:
-        """Parse a single Atom <entry> element."""
-        def find_text(tag: str) -> Optional[str]:
-            el = entry.find(tag)
-            if el is not None and el.text:
-                return el.text.strip()
-            return None
+        """
+        Parse an Atom entry element into an ExtractionResult.
 
-        def find_text_ns(tag: str) -> Optional[str]:
-            for prefix, uri in NAMESPACES.items():
-                el = entry.find(f"{{{uri}}}{tag}")
-                if el is not None and el.text:
-                    return el.text.strip()
-            return None
+        Args:
+            entry: The Atom entry element.
 
-        # Title
-        title = find_text("title") or ""
+        Returns:
+            ExtractionResult with extracted article data.
+        """
+        # Extract title
+        title_el = entry.find("title")
+        title = title_el.text.strip() if title_el is not None and title_el.text else ""
 
-        # Content — try content first, then summary
-        content = find_text("content") or find_text("summary") or ""
+        # Extract content
+        content = ""
+        content_el = entry.find("content")
+        if content_el is not None and content_el.text:
+            content = content_el.text.strip()
+        if not content:
+            summary = entry.find("summary")
+            if summary is not None and summary.text:
+                content = summary.text.strip()
 
-        # Excerpt
+        # Extract excerpt from summary
         excerpt = ""
-        if content:
-            plain = ElementTree.fromstring(f"<root>{content}</root>").text if "<" in content else content
-            if plain and len(plain) > 300:
-                excerpt = plain[:300].rsplit(" ", 1)[0] + "..."
-            elif plain:
-                excerpt = plain
+        summary = entry.find("summary")
+        if summary is not None and summary.text:
+            excerpt = summary.text.strip()
 
-        # Author
+        # Extract author
+        author: Optional[str] = None
         author_el = entry.find("author")
-        author = None
         if author_el is not None:
             name_el = author_el.find("name")
             if name_el is not None and name_el.text:
                 author = name_el.text.strip()
 
-        # Published date
-        published_at = find_text("published") or find_text("updated")
+        # Extract published_at
+        published_at: Optional[str] = None
+        published = entry.find("published")
+        if published is not None and published.text:
+            published_at = published.text.strip()
 
-        # Categories → tags
+        # Extract tags/categories
         tags: list[str] = []
-        for cat in entry.findall("category"):
-            term = cat.get("term") or cat.get("label")
+        for category in entry.findall("category"):
+            term = category.get("term")
             if term:
                 tags.append(term)
 
-        # Hubs
-        hubs: list[str] = []
-
-        # Image URLs — try media:content, media:thumbnail, link with rel=enclosure
+        # Extract image URLs from media
         image_urls: list[str] = []
-
-        for media_el in entry.findall(f"{{{NAMESPACES['media']}}}content"):
-            url = media_el.get("url")
-            if url and url not in image_urls:
-                image_urls.append(url)
-
-        for media_el in entry.findall(f"{{{NAMESPACES['media']}}}thumbnail"):
-            url = media_el.get("url")
-            if url and url not in image_urls:
-                image_urls.append(url)
-
-        # Try to find img tags in content
-        if content and "<img" in content:
-            img_pattern = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']')
-            for match in img_pattern.finditer(content):
-                img_url = match.group(1)
-                if img_url not in image_urls:
-                    image_urls.append(img_url)
+        media_thumbnail = entry.find("{http://search.yahoo.com/mrss/}thumbnail")
+        if media_thumbnail is not None and media_thumbnail.get("url"):
+            image_urls.append(media_thumbnail.get("url"))
+        media_content = entry.find("{http://search.yahoo.com/mrss/}content")
+        if media_content is not None and media_content.get("url"):
+            image_urls.append(media_content.get("url"))
 
         return ExtractionResult(
             title=title,
@@ -263,83 +237,69 @@ class RssExtractionProvider(BaseExtractionProvider):
             author=author,
             published_at=published_at,
             tags=tags,
-            hubs=hubs,
+            hubs=[],
             image_urls=image_urls,
             provider_name=self.name,
         )
 
-    def _parse_feed_xml(self, xml: str, source_type: str) -> ExtractionResult:
+    def _parse_feed_xml(self, xml_content: str, feed_type: str) -> ExtractionResult:
         """
-        Parse RSS/Atom XML and extract the first entry.
+        Parse RSS or Atom XML content and extract the first entry.
 
         Args:
-            xml: Raw XML string.
-            source_type: 'rss' or 'atom'.
+            xml_content: Raw XML string.
+            feed_type: 'rss' or 'atom'.
 
         Returns:
-            ExtractionResult from the first feed entry.
+            ExtractionResult with extracted article data from the first entry.
         """
-        root = ElementTree.fromstring(xml)
+        root = ElementTree.fromstring(xml_content)
 
-        if source_type == "atom" or self._detect_feed_type(xml) == "atom":
-            # Atom feed
-            entry = root.find("atom:entry", NAMESPACES) or root.find("{http://www.w3.org/2005/Atom}entry")
-            if entry is not None:
-                return self._parse_atom_entry(entry)
-        else:
-            # RSS feed
+        if feed_type == "rss":
             channel = root.find("channel")
-            if channel is not None:
-                item = channel.find("item")
-                if item is not None:
-                    return self._parse_rss_entry(item)
-
-        return ExtractionResult(
-            provider_name=self.name,
-            error="No entries found in feed",
-        )
+            if channel is None:
+                raise ExtractionError("No channel found in RSS feed", provider=self.name)
+            item = channel.find("item")
+            if item is None:
+                raise ExtractionError("No items found in RSS feed", provider=self.name)
+            return self._parse_rss_entry(item)
+        else:
+            # Atom feed
+            entry = root.find("entry")
+            if entry is None:
+                raise ExtractionError("No entries found in Atom feed", provider=self.name)
+            return self._parse_atom_entry(entry)
 
     def _parse_feed_entry_dict(self, entry_data: dict) -> ExtractionResult:
         """
-        Parse a pre-fetched feed entry dictionary.
+        Parse a feed entry dictionary into an ExtractionResult.
 
         Args:
-            entry_data: Dictionary with feed entry fields.
+            entry_data: Dictionary containing feed entry data.
 
         Returns:
-            ExtractionResult from the entry data.
+            ExtractionResult with extracted article data.
         """
         title = entry_data.get("title", "")
-        content = entry_data.get("content", "") or entry_data.get("description", "") or ""
+        content = entry_data.get("content", "")
         excerpt = entry_data.get("excerpt", "")
-        author = entry_data.get("author")
-        published_at = entry_data.get("published_at")
-        tags = entry_data.get("tags", [])
-        hubs = entry_data.get("hubs", [])
-        image_urls = entry_data.get("image_urls", [])
 
-        # Generate excerpt if not provided
+        # Generate excerpt from content if not provided
         if not excerpt and content:
-            plain = content
-            if "<" in plain:
-                try:
-                    plain = ElementTree.fromstring(f"<root>{content}</root>").text or ""
-                except ElementTree.ParseError:
-                    plain = re.sub(r"<[^>]+>", "", content)
-            if len(plain) > 300:
-                excerpt = plain[:300].rsplit(" ", 1)[0] + "..."
-            else:
-                excerpt = plain
+            text_content = BeautifulSoup(content, "html.parser").get_text()
+            excerpt = text_content[:200].strip()
+            if len(text_content) > 200:
+                excerpt += "..."
 
         return ExtractionResult(
             title=title,
             content=content,
             excerpt=excerpt,
-            author=author,
-            published_at=published_at,
-            tags=tags,
-            hubs=hubs,
-            image_urls=image_urls,
+            author=entry_data.get("author"),
+            published_at=entry_data.get("published_at"),
+            tags=entry_data.get("tags", []),
+            hubs=entry_data.get("hubs", []),
+            image_urls=entry_data.get("image_urls", []),
             provider_name=self.name,
         )
 
@@ -363,37 +323,36 @@ class RssExtractionProvider(BaseExtractionProvider):
         start_time = time.monotonic()
         last_error: Optional[Exception] = None
 
-        for attempt in range(self.max_retries):
+        for attempt in range(1, self.max_retries + 1):
             try:
-                # If feed_entry provided, parse it directly
-                if request.feed_entry:
+                # If feed_entry is provided, parse it directly
+                if request.feed_entry is not None:
                     result = self._parse_feed_entry_dict(request.feed_entry)
                     result.latency_ms = (time.monotonic() - start_time) * 1000
                     return result
 
-                # Otherwise fetch feed from source_url via HTTP GET
-                xml = await self._fetch_feed(request.source_url)
+                # Otherwise fetch the feed from source_url
+                client = self._get_client()
+                response = await client.get(request.source_url)
+                response.raise_for_status()
+                xml_content = response.text
 
-                # Parse RSS/Atom XML to extract title, content, excerpt
-                result = self._parse_feed_xml(xml, request.source_type)
+                # Detect feed type
+                feed_type = self._detect_feed_type(xml_content)
+                if request.source_type in ("rss", "atom"):
+                    feed_type = request.source_type
 
-                # Calculate latency
+                result = self._parse_feed_xml(xml_content, feed_type)
                 result.latency_ms = (time.monotonic() - start_time) * 1000
-
                 return result
 
             except Exception as e:
                 last_error = e
-                # Don't retry on the last attempt
-                if attempt >= self.max_retries - 1:
-                    break
-                # Check if error is retryable
-                if not self._is_retryable_error(e):
+                if not self._is_retryable_error(e) or attempt == self.max_retries:
                     break
 
-        # All retries exhausted
         raise ExtractionError(
-            message=f"RSS extraction failed after {self.max_retries} attempts: {str(last_error)}",
+            message=f"RSS extraction failed after {self.max_retries} attempts: {last_error}",
             provider=self.name,
             retryable=self._is_retryable_error(last_error) if last_error else True,
         )
@@ -408,11 +367,11 @@ class RssExtractionProvider(BaseExtractionProvider):
             True if the provider can reach and parse the feed, False otherwise.
         """
         try:
-            client = await self._get_client()
-            response = await client.get("https://habr.com/rss/", timeout=10.0)
+            client = self._get_client()
+            response = await client.get("https://habr.com/rss/")
             response.raise_for_status()
-            # Attempt to parse the response as RSS/Atom XML
-            ElementTree.fromstring(response.text)
+            # Try to parse as RSS
+            self._detect_feed_type(response.text)
             return True
         except Exception:
             return False
@@ -428,33 +387,16 @@ class RssExtractionProvider(BaseExtractionProvider):
             True if the error is transient and retryable.
         """
         error_str = str(error).lower()
-
         # Check for timeout errors
-        if any(pattern in error_str for pattern in ["timeout", "timed out"]):
+        if "timed out" in error_str or "timeout" in error_str:
             return True
-
         # Check for connection errors
-        if any(pattern in error_str for pattern in ["connection", "refused", "reset"]):
+        if "connection" in error_str:
             return True
-
-        # Check for HTTP 5xx status codes
-        if any(pattern in error_str for pattern in [
-            "500", "502", "503", "504",
-            "internal server error",
-            "bad gateway",
-            "service unavailable",
-            "gateway timeout",
-        ]):
+        # Check for 5xx server errors
+        if "503" in error_str or "502" in error_str or "500" in error_str:
             return True
-
-        # Check for rate limiting (429)
-        if any(pattern in error_str for pattern in ["429", "too many requests", "rate limit"]):
+        # Check for 429 rate limiting
+        if "429" in error_str:
             return True
-
         return False
-
-    async def close(self) -> None:
-        """Close the underlying HTTP client."""
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
-            self._client = None

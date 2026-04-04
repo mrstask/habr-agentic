@@ -18,7 +18,6 @@ import time
 from typing import Optional
 
 from openai import AsyncOpenAI
-from openai.types.images_response import ImagesResponse
 
 from app.etl.image_generation.base import (
     BaseImageGenerationProvider,
@@ -88,16 +87,15 @@ class OpenAIImageGenerationProvider(BaseImageGenerationProvider):
         Raises:
             ImageGenerationError: If the image generation fails after all retries.
         """
-        start_time = time.time()
-        last_error = None
-
         model = request.model or self.model
+        last_error: Optional[Exception] = None
 
         for attempt in range(self.max_retries):
             try:
+                start_time = time.monotonic()
                 client = self._get_client()
 
-                response: ImagesResponse = await client.images.generate(
+                response = await client.images.generate(
                     model=model,
                     prompt=request.prompt,
                     size=request.size,
@@ -106,12 +104,12 @@ class OpenAIImageGenerationProvider(BaseImageGenerationProvider):
                     n=request.n,
                 )
 
+                latency_ms = (time.monotonic() - start_time) * 1000
+
                 image_data = response.data[0]
                 image_url = getattr(image_data, "url", None)
                 image_b64 = getattr(image_data, "b64_json", None)
                 revised_prompt = getattr(image_data, "revised_prompt", None)
-
-                latency_ms = (time.time() - start_time) * 1000
 
                 return ImageGenerationResult(
                     image_url=image_url,
@@ -122,16 +120,19 @@ class OpenAIImageGenerationProvider(BaseImageGenerationProvider):
                     latency_ms=latency_ms,
                 )
 
-            except Exception as e:
-                last_error = e
-                if attempt >= self.max_retries - 1:
-                    break
-                if not self._is_retryable_error(e):
-                    break
+            except Exception as exc:
+                last_error = exc
+                if not self._is_retryable_error(exc):
+                    raise ImageGenerationError(
+                        message=str(exc),
+                        provider=self.name,
+                        retryable=False,
+                    )
+                if attempt < self.max_retries - 1:
+                    await __import__("asyncio").sleep(2 ** attempt)
 
-        latency_ms = (time.time() - start_time) * 1000
         raise ImageGenerationError(
-            message=f"Image generation failed after {self.max_retries} attempts: {str(last_error)}",
+            message=f"Image generation failed after {self.max_retries} retries: {last_error}",
             provider=self.name,
             retryable=True,
         )
@@ -147,13 +148,13 @@ class OpenAIImageGenerationProvider(BaseImageGenerationProvider):
         """
         try:
             client = self._get_client()
-            response: ImagesResponse = await client.images.generate(
+            await client.images.generate(
                 model=self.model,
                 prompt="test",
                 size="1024x1024",
                 n=1,
             )
-            return len(response.data) > 0
+            return True
         except Exception:
             return False
 
@@ -168,13 +169,5 @@ class OpenAIImageGenerationProvider(BaseImageGenerationProvider):
             True if the error is transient and retryable.
         """
         error_str = str(error).lower()
-        retryable_patterns = [
-            "timeout",
-            "connection",
-            "rate limit",
-            "too many requests",
-            "service unavailable",
-            "internal server error",
-            "gateway",
-        ]
-        return any(pattern in error_str for pattern in retryable_patterns)
+        retryable_keywords = ["timeout", "rate limit", "connection refused", "connection error", "network"]
+        return any(keyword in error_str for keyword in retryable_keywords)

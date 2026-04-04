@@ -13,7 +13,6 @@ Usage::
 """
 
 import logging
-from typing import Optional
 
 from app.etl.extraction.base import BaseExtractionProvider
 
@@ -50,9 +49,6 @@ def get_registered_extraction_providers() -> list[str]:
 
 def create_extraction_provider(
     provider_name: str,
-    timeout: Optional[int] = None,
-    max_retries: Optional[int] = None,
-    user_agent: Optional[str] = None,
     **kwargs,
 ) -> BaseExtractionProvider:
     """
@@ -63,10 +59,8 @@ def create_extraction_provider(
 
     Args:
         provider_name: Provider identifier (e.g., 'html', 'rss').
-        timeout: HTTP timeout in seconds. Falls back to settings or default.
-        max_retries: Maximum retry attempts. Falls back to settings or default.
-        user_agent: User-Agent header string. Falls back to default.
-        **kwargs: Additional provider-specific configuration.
+        **kwargs: Additional provider-specific configuration
+                  (timeout, max_retries, user_agent, etc.).
 
     Returns:
         An initialized extraction provider instance.
@@ -83,26 +77,18 @@ def create_extraction_provider(
             f"Available providers: {get_registered_extraction_providers()}"
         )
 
-    # Resolve timeout from kwargs, then settings, then default
-    if timeout is None:
-        timeout = kwargs.pop("timeout", 30)
+    # Build provider_kwargs with defaults
+    provider_kwargs: dict = {}
 
-    # Resolve max_retries from kwargs, then settings, then default
-    if max_retries is None:
-        max_retries = kwargs.pop("max_retries", 3)
+    # Use explicitly passed kwargs or fall back to defaults
+    if "timeout" not in kwargs:
+        provider_kwargs["timeout"] = 30
+    if "max_retries" not in kwargs:
+        provider_kwargs["max_retries"] = 3
+    if "user_agent" not in kwargs:
+        provider_kwargs["user_agent"] = "HabrAgenticPipeline/1.0"
 
-    # Resolve user_agent from kwargs, then default
-    if user_agent is None:
-        user_agent = kwargs.pop("user_agent", "HabrAgenticPipeline/1.0")
-
-    # Build provider_kwargs dict with resolved settings
-    provider_kwargs: dict = {
-        "timeout": timeout,
-        "max_retries": max_retries,
-        "user_agent": user_agent,
-    }
-
-    # Merge any remaining kwargs (allow overrides)
+    # Merge with explicitly passed kwargs (they take precedence)
     provider_kwargs.update(kwargs)
 
     # Instantiate and return the provider class
